@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/sync-prices",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/check-orders",
+      "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/cron/trend-scout",
+      "schedule": "0 6 * * 1"
+    },
+    {
+      "path": "/api/cron/daily-report",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}
