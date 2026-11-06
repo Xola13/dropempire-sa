@@ -15,22 +15,24 @@ export interface SellerDetails {
 
 const clean = (v: string | undefined) => (v && v.trim() ? v.trim() : null)
 
-export function getSeller(): SellerDetails {
+type Env = Record<string, string | undefined>
+
+export function getSeller(env: Env = process.env): SellerDetails {
   return {
-    tradingName: clean(process.env.SELLER_TRADING_NAME) ?? 'DropEmpire SA',
-    legalName: clean(process.env.SELLER_LEGAL_NAME),
-    registrationNumber: clean(process.env.SELLER_REG_NUMBER),
-    vatNumber: clean(process.env.SELLER_VAT_NUMBER),
-    physicalAddress: clean(process.env.SELLER_ADDRESS),
-    email: clean(process.env.SELLER_EMAIL),
-    phone: clean(process.env.SELLER_PHONE),
-    informationOfficer: clean(process.env.SELLER_INFORMATION_OFFICER),
+    tradingName: clean(env.SELLER_TRADING_NAME) ?? 'DropEmpire SA',
+    legalName: clean(env.SELLER_LEGAL_NAME),
+    registrationNumber: clean(env.SELLER_REG_NUMBER),
+    vatNumber: clean(env.SELLER_VAT_NUMBER),
+    physicalAddress: clean(env.SELLER_ADDRESS),
+    email: clean(env.SELLER_EMAIL),
+    phone: clean(env.SELLER_PHONE),
+    informationOfficer: clean(env.SELLER_INFORMATION_OFFICER),
   }
 }
 
 /** Names of the required details that are still unset. Used by the go-live check. */
-export function missingSellerDetails(): string[] {
-  const s = getSeller()
+export function missingSellerDetails(env: Env = process.env): string[] {
+  const s = getSeller(env)
   const required: [string, string | null][] = [
     ['SELLER_LEGAL_NAME', s.legalName],
     ['SELLER_ADDRESS', s.physicalAddress],
