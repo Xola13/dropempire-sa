@@ -65,7 +65,7 @@ Status legend: `[ ]` open · `[x]` done
 - **Where:** `app/checkout/page.tsx` (the live checkout) handles only the PayFast response; `/api/store/checkout` returns only `orderId` for Yoco; nothing collects a card token or calls `/api/payments/yoco`. `components/store/CheckoutForm.tsx` has a half-written Yoco branch but is not used anywhere.
 - **Problem:** choosing Yoco creates a pending order and then nothing happens (spinner/stuck button).
 - **Fix options:** hide the Yoco option until the Yoco popup/SDK flow is built (small), or build it (about half a day). *Your call.*
-- [ ]
+- [x] Done: Yoco hidden and rejected server-side until `NEXT_PUBLIC_YOCO_ENABLED=true`. Building the real Yoco flow is still open.
 
 ### N2. (New) Inconsistent support email in code
 `components/store/Footer.tsx` uses `support@dropempiresa.co.za`; the old confirmation page used `support@dropempire.co.za`. Contact details now come from `SELLER_EMAIL`; the footer still needs to use it (part of H8).
@@ -90,7 +90,7 @@ Status legend: `[ ]` open · `[x]` done
 - **Where:** `app/api/store/checkout/route.ts`.
 - **Problem:** every checkout attempt inserts a `pending` order and a customer row; abandoned ones are never expired. Stock is only a manual flag (`stock_status`); no re-check of supplier stock at payment time.
 - **Fix:** cron to cancel `pending` orders older than 24 h; re-validate price/stock in the fulfilment step (ties into C2/C3).
-- [ ]
+- [x] Partly done: abandoned `pending` orders are cancelled after 24 h by the daily cron. *Not done:* re-checking supplier stock at payment time.
 
 ### H4. Tracking: only AliExpress/CJ; first shipped item marks the whole order fulfilled
 - **Where:** `checkAndUpdateTracking()` in `lib/agents/fulfillment-agent.ts`.
@@ -136,13 +136,13 @@ Remove or confirm each before launch. I will not invent replacements.
 - **Where:** `lib/agents/*.ts`, `lib/anthropic.ts`, `app/api/ai/*`, `app/api/cron/trend-scout`, `price-optimizer`.
 - **Problems:** the routes are admin/cron-gated (good), but there is no per-day token or call budget, no timeout/`maxRetries` on the Anthropic client, and `pricing-agent` loops products making one model call each. A bug or a cron loop can burn credit unbounded. Model IDs are hardcoded (`claude-sonnet-4-20250514`) and duplicated across 5 files.
 - **Fix:** shared Anthropic client with timeout, retry cap, and a daily call/token counter in the DB (hard stop); central model constant; set a monthly spend limit in the Anthropic console.
-- [ ]
+- [x] Done: `lib/ai.ts` (60 s timeout, 2 retries, one model constant, hard daily cap `AI_DAILY_CALL_LIMIT`, default 300, usage logged). *You should also set a monthly spend limit in the Anthropic console.*
 
 ### H10. Prompt-injection risk from supplier data, and agent output is trusted
 - **Where:** `lib/agents/listing-agent.ts`, `sourcing-agent.ts`, `pricing-agent.ts`.
 - **Problem:** supplier titles/descriptions are pasted directly into prompts. A malicious listing can steer output (e.g. fake claims, hidden links, price recommendations). Output is parsed from JSON and then stored and **published to the storefront** (description, FAQs, SEO fields). Check that: output length/shape is validated with zod; `is_published` stays false until an admin reviews; descriptions are rendered as text, not raw HTML.
 - **Fix:** wrap supplier text in delimited data blocks with an instruction not to follow it; zod-validate the model JSON; force `is_published=false` on AI-created products; never let the agent change price without admin approval *(business logic — your call)*.
-- [ ]
+- [x] Done: supplier text fenced as untrusted data in listing/sourcing/pricing prompts; listing output zod-validated; AI price must be a finite positive number <= 3x current. AI-created listings were already saved as drafts. *Not changed (business logic): the pricing agent still writes AI prices live without a margin floor, so consider adding one.*
 
 ---
 
@@ -153,7 +153,7 @@ Remove or confirm each before launch. I will not invent replacements.
 - **M3. Cron schedule reduced to daily** (commit `58f1242`, Hobby plan limit). Paid-but-unstarted orders now wait up to 24 h for the recovery sweep. Either upgrade to Vercel Pro (4-hour or hourly sweep) or trigger an external pinger (e.g. cron-job.org hitting the endpoint with `CRON_SECRET`).
 - **M4. PayFast source-IP check** not implemented. The server-side `query/validate` call already covers the main threat, so this is defence in depth only.
 - **M5. `NEXT_PUBLIC_PAYFAST_SANDBOX`** is a build-time public variable: flipping it in Vercel requires a **redeploy**, and it is exposed to the browser. Prefer a server-only `PAYFAST_SANDBOX`. Also add a startup guard so production refuses to run with the public sandbox merchant ID `10000100`.
-- **M6. RLS migration 005 not yet applied** to the live database (status: unknown *(verify)*). Until then, the open policies from migrations 001/003 (`USING (true)`) let anyone with the public anon key read all orders/customers and modify marketplace data via the Supabase REST API. **Highest-value database action; apply before go-live.** Also confirm the live DB matches `supabase/migrations` (the setup file moved to `supabase/dev`).
+- **M6. (DONE 2026-11-06) RLS migration 005 applied to the live database** (together with 003, which had never been run, and 006). Original note: RLS migration 005 not yet applied to the live database (status: unknown *(verify)*). Until then, the open policies from migrations 001/003 (`USING (true)`) let anyone with the public anon key read all orders/customers and modify marketplace data via the Supabase REST API. **Highest-value database action; apply before go-live.** Also confirm the live DB matches `supabase/migrations` (the setup file moved to `supabase/dev`).
 - **M7. No `sitemap.xml`** (only `robots.ts`). Add `app/sitemap.ts` listing published products.
 - **M8. Images:** remotePatterns allow-list lacks some supplier hosts (e.g. DHgate/Alibaba/PnP scrapers exist). Product images from other hosts will fail to render. `WholesaleOpportunityCard` uses `<img>` (admin only; low impact).
 - **M9. Empty catalogue** state: confirm `/`, `/products`, `/products/[slug]` render a friendly "coming soon" instead of blank grids; do not show "Thousands of products" (see H8).
@@ -210,3 +210,13 @@ Remove or confirm each before launch. I will not invent replacements.
 
 Order: 1 → 2 → 3/4 (together) → 5 → 6/7 → 8 → 9 → 10/11 → 12 → 13 → 14 → 15 → 16.
 Critical + High total: roughly 35–50 hours; the first five items (the "do not take money until these are done" set) are roughly 12–16 hours.
+
+---
+
+## Progress log
+
+- Criticals C1-C5: done on branch `hardening/production-readiness` (not yet merged or deployed).
+- Live Supabase: migrations 003 + 005 + 006 applied; test customer/orders removed; products kept (207, all unpublished).
+- Also done: N1, H3 (partial), H9, H10, config check endpoint (`/api/admin/config-check`).
+- Still open: H1 (Playwright, needs decision), H2 (Yoco reconciliation, moot while Yoco is hidden), H4 (tracking/Bob Go, decision), H5 (Sentry, needs DSN), H6 (needs Upstash account), H7 (checkout consent boxes), H8 (placeholder claims, needs your answers), Mediums and Lows.
+- Found, not ours: the Supabase project also holds `profiles`, `events` and a vector `match_products` function from another app; `profiles`/`events` policies are open to everyone (both tables empty).
