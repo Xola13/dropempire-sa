@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
-
-function checkAdminAuth(req: NextRequest): boolean {
-  const cookie = req.cookies.get('admin_session')
-  const header = req.headers.get('x-admin-token')
-  return cookie?.value === process.env.ADMIN_SECRET || header === process.env.ADMIN_SECRET
-}
+import { requireAdmin } from '@/lib/security/guards'
+import { intParam, noStore } from '@/lib/http'
 
 export async function GET(req: NextRequest) {
-  if (!checkAdminAuth(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = await requireAdmin(req)
+  if (denied) return denied
 
-  const days = parseInt(req.nextUrl.searchParams.get('days') || '30')
+  const days = intParam(req.nextUrl.searchParams.get('days'), 30, 1, 365)
   const from = new Date(Date.now() - days * 86400000)
     .toISOString()
     .split('T')[0]
@@ -46,7 +41,8 @@ export async function GET(req: NextRequest) {
   const todayProfit =
     todayStats.data?.reduce((sum, o) => sum + (o.total_profit || 0), 0) || 0
 
-  return NextResponse.json({
+  return NextResponse.json(
+    {
     analytics: analytics.data,
     topProducts: topProducts.data,
     today: {
@@ -55,5 +51,7 @@ export async function GET(req: NextRequest) {
       orders: todayStats.data?.length || 0,
     },
     agentActivity: agentActivity.data,
-  })
+    },
+    { headers: noStore }
+  )
 }

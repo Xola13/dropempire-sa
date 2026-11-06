@@ -24,20 +24,29 @@ export default function AccountMenu() {
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const supabase = createClient()
+    // The menu is cosmetic: if Supabase isn't configured (or is unreachable) the
+    // storefront must still render, so never let this throw.
+    let unsubscribe: (() => void) | undefined
+    try {
+      const supabase = createClient()
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
+      supabase.auth
+        .getSession()
+        .then(({ data: { session } }) => setUser(session?.user ?? null))
+        .catch(() => setUser(null))
+        .finally(() => setLoading(false))
+
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange((_event, session) => {
+        setUser(session?.user ?? null)
+      })
+      unsubscribe = () => subscription.unsubscribe()
+    } catch {
       setLoading(false)
-    })
+    }
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-    })
-
-    return () => subscription.unsubscribe()
+    return () => unsubscribe?.()
   }, [])
 
   useEffect(() => {

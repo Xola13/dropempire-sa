@@ -1,11 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { slugify } from '@/lib/utils'
+import { requireAdmin } from '@/lib/security/guards'
+import { z } from 'zod'
+import { parseBody, serverError } from '@/lib/http'
+
+const httpsUrl = z.string().url().max(2000).refine(u => u.startsWith('https://'))
+
+const ImportSchema = z.object({
+  name: z.string().trim().min(2).max(300),
+  description: z.string().max(10_000).optional(),
+  // Scraped data is messy: drop bad image URLs instead of rejecting the import.
+  images: z
+    .array(z.string())
+    .max(30)
+    .optional()
+    .transform(list => (list ?? []).filter(u => httpsUrl.safeParse(u).success).slice(0, 10)),
+  category: z.string().trim().max(100).optional(),
+  sellingPrice: z.number().positive().max(1_000_000),
+  supplierPrice: z.number().positive().max(1_000_000),
+  supplier: z.enum(['aliexpress', 'cj', 'makro', 'takealot', 'game', 'bidorbuy', 'hivve', 'gumtree', 'manual']),
+  supplierProductId: z.string().max(200).optional(),
+  supplierProductUrl: httpsUrl.optional().or(z.literal('')),
+  deliveryDays: z.string().max(50).optional(),
+})
 
 // Import a product manually — zero AI needed
 export async function POST(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   try {
-    const body = await req.json()
+    const parsed = await parseBody(req, ImportSchema)
+    if (!parsed.ok) return parsed.response
     const {
       name,
       description,
@@ -13,15 +40,11 @@ export async function POST(req: NextRequest) {
       category,
       sellingPrice,
       supplierPrice,
-      supplier,          // 'takealot' | 'makro' | 'cj' | 'aliexpress'
+      supplier,
       supplierProductId,
       supplierProductUrl,
       deliveryDays,
-    } = body
-
-    if (!name || !sellingPrice || !supplierPrice || !supplier) {
-      return NextResponse.json({ error: 'name, sellingPrice, supplierPrice, supplier are required' }, { status: 400 })
-    }
+    } = parsed.data
 
     const shippingCost = supplier === 'takealot' || supplier === 'makro' ? 0 : supplier === 'cj' ? 65 : 85
     const paymentFee = sellingPrice * 0.035
@@ -37,7 +60,7 @@ export async function POST(req: NextRequest) {
     // Build a slug — handle duplicates by appending timestamp
     let slug = slugify(name)
     const { data: existing } = await supabaseAdmin.from('products').select('id').eq('slug', slug).maybeSingle()
-    if (existing) slug = `${slug}-${Date.now()}`
+    if (existing) slug = `${slug}-${Date.now().toString(36)}`
 
     const deliveryDaysNum = parseInt((deliveryDays || '7').split('-')[0]) || 7
 
@@ -66,8 +89,7 @@ export async function POST(req: NextRequest) {
       .single()
 
     if (error) {
-      console.error('Import error:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      throw error
     }
 
     return NextResponse.json({
@@ -76,8 +98,7 @@ export async function POST(req: NextRequest) {
       margin: `${marginPercent.toFixed(1)}%`,
       message: `Product imported! Margin: ${marginPercent.toFixed(1)}%. Go to Products to publish it.`,
     })
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : 'Import failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+  } catch (e) {
+    return serverError('suppliers/manual-import', e)
   }
 }

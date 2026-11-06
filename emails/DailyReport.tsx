@@ -10,6 +10,7 @@ import {
   Column,
   Section,
 } from '@react-email/components'
+import { getSiteUrl } from '@/lib/site'
 
 interface DailyReportProps {
   date: string
@@ -290,10 +291,7 @@ export default function DailyReportEmail({
             <Text style={{ color: '#64748B', fontSize: '14px', margin: 0 }}>
               View full analytics in your{' '}
               <a
-                href={
-                  process.env.NEXT_PUBLIC_STORE_URL +
-                    '/admin/analytics' || '/admin/analytics'
-                }
+                href={`${getSiteUrl()}/admin/analytics`}
                 style={{ color: '#F59E0B' }}
               >
                 admin dashboard

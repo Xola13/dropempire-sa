@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
+import { requireAdmin } from '@/lib/security/guards'
 
 export async function GET(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   try {
     const { searchParams } = new URL(req.url)
     const supplier = searchParams.get('supplier')

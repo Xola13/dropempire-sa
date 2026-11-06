@@ -5,9 +5,14 @@ node_modules/
 .next/
 out/
 
-# Environment variables — never commit these
-.env.local
-.env.*.local
+# Environment variables — never commit these (only .env.example is tracked)
+.env
+.env.*
+!.env.example
+
+# Test / build artefacts
+coverage/
+*.tsbuildinfo
 
 # OS
 .DS_Store

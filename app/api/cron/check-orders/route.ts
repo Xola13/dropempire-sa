@@ -1,17 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { checkAndUpdateTracking } from '@/lib/agents/fulfillment-agent'
+import { checkAndUpdateTracking, retryUnfulfilledPaidOrders } from '@/lib/agents/fulfillment-agent'
+import { requireCron } from '@/lib/security/guards'
+import { serverError } from '@/lib/http'
+
+export const maxDuration = 300
 
 export async function GET(req: NextRequest) {
-  const secret = req.headers.get('authorization')
-  if (secret !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = await requireCron(req)
+  if (denied) return denied
 
   try {
+    const recovery = await retryUnfulfilledPaidOrders()
     await checkAndUpdateTracking()
-    return NextResponse.json({ success: true })
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : 'Tracking check failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+    return NextResponse.json({ success: true, ...recovery })
+  } catch (e) {
+    return serverError('cron/check-orders', e)
   }
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { Suspense, useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
@@ -179,7 +179,7 @@ function OrderTrackingCard({ order }: { order: Order }) {
   )
 }
 
-export default function TrackPage() {
+function TrackContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const orderParam = searchParams.get('order')
@@ -288,5 +288,14 @@ export default function TrackPage() {
         </div>
       )}
     </div>
+  )
+}
+
+// useSearchParams() must sit under a Suspense boundary or the page cannot be prerendered.
+export default function TrackPage() {
+  return (
+    <Suspense fallback={<div className="min-h-[60vh]" />}>
+      <TrackContent />
+    </Suspense>
   )
 }

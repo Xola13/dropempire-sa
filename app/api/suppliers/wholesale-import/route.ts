@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { slugify } from '@/lib/utils'
+import { requireAdmin } from '@/lib/security/guards'
 
 // POST — import a wholesale opportunity (DHgate/Alibaba product) into the products table
 // This is a lightweight import that doesn't call the full AI listing agent
 // (to keep it fast enough for the marketplace UI)
 export async function POST(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   try {
     const body = await req.json()
     const {

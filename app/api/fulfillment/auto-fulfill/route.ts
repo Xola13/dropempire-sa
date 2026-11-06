@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runFulfillmentAgent } from '@/lib/agents/fulfillment-agent'
+import { requireCron } from '@/lib/security/guards'
 
 export async function POST(req: NextRequest) {
-  const authHeader = req.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = await requireCron(req)
+  if (denied) return denied
 
   const { orderId } = await req.json()
   if (!orderId) {

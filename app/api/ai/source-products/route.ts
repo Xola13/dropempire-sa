@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runSourcingAgent } from '@/lib/agents/sourcing-agent'
+import { requireAdmin } from '@/lib/security/guards'
+import { serverError } from '@/lib/http'
 
 export async function POST(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   try {
     const { keyword } = await req.json()
     if (!keyword) {
@@ -9,8 +14,7 @@ export async function POST(req: NextRequest) {
     }
     const result = await runSourcingAgent(keyword)
     return NextResponse.json(result)
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : 'Sourcing failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+  } catch (e) {
+    return serverError('ai/source-products', e)
   }
 }

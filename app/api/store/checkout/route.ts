@@ -1,163 +1,208 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { randomUUID } from 'crypto'
+import { z } from 'zod'
 import { supabaseAdmin } from '@/lib/supabase'
 import { generatePaymentForm } from '@/lib/payfast'
 import { generateOrderNumber } from '@/lib/utils'
-import { z } from 'zod'
+import { fromCents, toCents } from '@/lib/money'
+import { getSiteUrl } from '@/lib/site'
+import { limitByIp, parseBody, serverError } from '@/lib/http'
 
-const CheckoutSchema = z.object({
-  customerName: z.string().min(2),
-  customerEmail: z.string().email(),
-  customerPhone: z.string().min(9),
-  deliveryAddress: z.object({
-    address: z.string().min(5),
-    city: z.string().min(2),
-    province: z.string().min(2),
-    postalCode: z.string().min(4),
-  }),
-  items: z.array(
-    z.object({
-      productId: z.string().uuid(),
-      qty: z.number().int().positive(),
-    })
-  ),
-  paymentMethod: z.enum(['payfast', 'yoco']),
-})
+const FREE_SHIPPING_THRESHOLD_CENTS = 100_000 // R1000
+const FLAT_SHIPPING_CENTS = 9_900 // R99
+const MAX_LINE_QTY = 20
+
+// Strip control characters and collapse whitespace in free-text fields.
+const text = (min: number, max: number) =>
+  z
+    .string()
+    .transform(s => s.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim())
+    .pipe(z.string().min(min).max(max))
+
+const CheckoutSchema = z
+  .object({
+    customerName: text(2, 100),
+    customerEmail: z.string().trim().toLowerCase().email().max(254),
+    customerPhone: z.string().trim().regex(/^\+?[0-9 ()-]{9,20}$/, 'Invalid phone number'),
+    deliveryAddress: z.object({
+      address: text(5, 200),
+      city: text(2, 80),
+      province: text(2, 50),
+      postalCode: z.string().trim().regex(/^\d{4}$/, 'Postal code must be 4 digits'),
+    }),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().uuid(),
+          qty: z.number().int().min(1).max(MAX_LINE_QTY),
+        })
+      )
+      .min(1)
+      .max(50),
+    paymentMethod: z.enum(['payfast', 'yoco']),
+  })
+  .strict()
+
+const PRODUCT_COLUMNS =
+  'id, name, selling_price, cost_price, supplier, supplier_product_id, supplier_product_url, images, stock_status'
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const data = CheckoutSchema.parse(body)
+    const limited = await limitByIp(req, 'checkout', 10, 60)
+    if (limited) return limited
 
-    const productIds = data.items.map(i => i.productId)
-    const { data: products, error: prodError } = await supabaseAdmin
-      .from('products')
-      .select('*')
-      .in('id', productIds)
-      .eq('is_published', true)
+    const parsed = await parseBody(req, CheckoutSchema)
+    if (!parsed.ok) return parsed.response
+    const data = parsed.data
 
-    if (prodError || !products?.length) {
-      return NextResponse.json(
-        { error: 'Products not found' },
-        { status: 400 }
-      )
+    // Merge duplicate lines so the same product can't dodge the per-line quantity cap.
+    const qtyByProduct = new Map<string, number>()
+    for (const { productId, qty } of data.items) {
+      qtyByProduct.set(productId, (qtyByProduct.get(productId) ?? 0) + qty)
+    }
+    if ([...qtyByProduct.values()].some(q => q > MAX_LINE_QTY)) {
+      return NextResponse.json({ error: `Maximum ${MAX_LINE_QTY} units per product` }, { status: 400 })
     }
 
-    const orderItems = data.items.map(item => {
-      const product = products.find(p => p.id === item.productId)
-      if (!product) throw new Error(`Product not found: ${item.productId}`)
-      return {
+    // Prices always come from the database, never from the client.
+    const { data: products, error: prodError } = await supabaseAdmin
+      .from('products')
+      .select(PRODUCT_COLUMNS)
+      .in('id', [...qtyByProduct.keys()])
+      .eq('is_published', true)
+
+    if (prodError) throw prodError
+
+    const byId = new Map((products ?? []).map(p => [p.id as string, p]))
+    const unavailable: string[] = []
+    const orderItems = []
+
+    for (const [productId, qty] of qtyByProduct) {
+      const product = byId.get(productId)
+      if (!product || product.stock_status === 'out_of_stock') {
+        unavailable.push(productId)
+        continue
+      }
+      orderItems.push({
         product_id: product.id,
         name: product.name,
-        qty: item.qty,
+        qty,
         unit_price: product.selling_price,
         supplier_cost: product.cost_price,
         supplier: product.supplier,
         supplier_product_id: product.supplier_product_id,
+        supplier_product_url: product.supplier_product_url ?? undefined,
         images: product.images,
-      }
-    })
-
-    const subtotal = orderItems.reduce(
-      (sum, i) => sum + i.unit_price * i.qty,
-      0
-    )
-    const shippingCost = subtotal > 1000 ? 0 : 99
-    const total = subtotal + shippingCost
-    const totalCost = orderItems.reduce(
-      (sum, i) => sum + i.supplier_cost * i.qty,
-      0
-    )
-    const totalProfit = total - totalCost - shippingCost
-
-    let customerId: string
-    const { data: existingCustomer } = await supabaseAdmin
-      .from('customers')
-      .select('id')
-      .eq('email', data.customerEmail)
-      .single()
-
-    if (existingCustomer) {
-      customerId = existingCustomer.id
-    } else {
-      const { data: newCustomer, error: custError } = await supabaseAdmin
-        .from('customers')
-        .insert({
-          email: data.customerEmail,
-          name: data.customerName,
-          phone: data.customerPhone,
-        })
-        .select('id')
-        .single()
-      if (custError || !newCustomer) {
-        return NextResponse.json(
-          { error: 'Failed to create customer' },
-          { status: 500 }
-        )
-      }
-      customerId = newCustomer.id
+      })
     }
 
-    const orderNumber = generateOrderNumber()
-    const { data: order, error: orderError } = await supabaseAdmin
-      .from('orders')
-      .insert({
-        order_number: orderNumber,
-        customer_id: customerId,
-        customer_email: data.customerEmail,
-        customer_name: data.customerName,
-        customer_phone: data.customerPhone,
-        delivery_address: data.deliveryAddress,
-        items: orderItems,
-        subtotal,
-        shipping_cost: shippingCost,
-        total,
-        total_cost: totalCost,
-        total_profit: totalProfit,
-        payment_method: data.paymentMethod,
-        payment_status: 'pending',
-        fulfillment_status: 'unfulfilled',
-        status: 'pending',
-      })
-      .select('id, order_number')
-      .single()
-
-    if (orderError || !order) {
+    if (unavailable.length > 0) {
       return NextResponse.json(
-        { error: 'Failed to create order' },
-        { status: 500 }
+        { error: 'Some items are no longer available', unavailable },
+        { status: 409 }
       )
     }
 
-    const storeUrl =
-      process.env.NEXT_PUBLIC_STORE_URL || 'http://localhost:3000'
+    const subtotalCents = orderItems.reduce((s, i) => s + toCents(i.unit_price) * i.qty, 0)
+    const shippingCents = subtotalCents > FREE_SHIPPING_THRESHOLD_CENTS ? 0 : FLAT_SHIPPING_CENTS
+    const totalCents = subtotalCents + shippingCents
+    const costCents = orderItems.reduce((s, i) => s + toCents(i.supplier_cost) * i.qty, 0)
+    const profitCents = totalCents - costCents - shippingCents
 
-    if (data.paymentMethod === 'payfast') {
-      const { action, params } = generatePaymentForm({
-        id: order.id,
-        orderNumber: order.order_number,
+    // Build the payment form first so a misconfigured gateway fails before we write anything.
+    const orderId = randomUUID()
+    const siteUrl = getSiteUrl()
+    let orderNumber = generateOrderNumber()
+
+    const buildPayfast = () =>
+      generatePaymentForm({
+        id: orderId,
+        orderNumber,
         customerEmail: data.customerEmail,
         customerName: data.customerName,
-        total,
-        returnUrl: `${storeUrl}/order-confirmation?order_id=${order.id}`,
-        cancelUrl: `${storeUrl}/checkout?cancelled=1`,
-        notifyUrl: `${storeUrl}/api/webhooks/payfast`,
+        totalCents,
+        returnUrl: `${siteUrl}/order-confirmation?order_id=${orderId}`,
+        cancelUrl: `${siteUrl}/checkout?cancelled=1`,
+        notifyUrl: `${siteUrl}/api/webhooks/payfast`,
       })
+    if (data.paymentMethod === 'payfast') buildPayfast()
+
+    // Guest checkout must not overwrite an existing customer's details.
+    let customerId: string
+    const { data: existing } = await supabaseAdmin
+      .from('customers')
+      .select('id')
+      .eq('email', data.customerEmail)
+      .maybeSingle()
+
+    if (existing) {
+      customerId = existing.id
+    } else {
+      const { data: created, error: custError } = await supabaseAdmin
+        .from('customers')
+        .insert({ email: data.customerEmail, name: data.customerName, phone: data.customerPhone })
+        .select('id')
+        .single()
+
+      if (created) {
+        customerId = created.id
+      } else if (custError?.code === '23505') {
+        // Lost a race with a concurrent checkout for the same email.
+        const { data: raced } = await supabaseAdmin
+          .from('customers')
+          .select('id')
+          .eq('email', data.customerEmail)
+          .single()
+        if (!raced) throw custError
+        customerId = raced.id
+      } else {
+        throw custError ?? new Error('Failed to create customer')
+      }
+    }
+
+    const row = {
+      id: orderId,
+      customer_id: customerId,
+      customer_email: data.customerEmail,
+      customer_name: data.customerName,
+      customer_phone: data.customerPhone,
+      delivery_address: data.deliveryAddress,
+      items: orderItems,
+      subtotal: fromCents(subtotalCents),
+      shipping_cost: fromCents(shippingCents),
+      total: fromCents(totalCents),
+      total_cost: fromCents(costCents),
+      total_profit: fromCents(profitCents),
+      payment_method: data.paymentMethod,
+      payment_status: 'pending',
+      fulfillment_status: 'unfulfilled',
+      status: 'pending',
+    }
+
+    // order_number is UNIQUE; retry on the (very unlikely) collision.
+    let order: { id: string; order_number: string } | null = null
+    for (let attempt = 0; attempt < 3 && !order; attempt++) {
+      if (attempt > 0) orderNumber = generateOrderNumber()
+      const { data: inserted, error } = await supabaseAdmin
+        .from('orders')
+        .insert({ ...row, order_number: orderNumber })
+        .select('id, order_number')
+        .single()
+      if (inserted) order = inserted
+      else if (error?.code !== '23505') throw error ?? new Error('Failed to create order')
+    }
+    if (!order) throw new Error('Could not allocate a unique order number')
+
+    if (data.paymentMethod === 'payfast') {
       return NextResponse.json({
         orderId: order.id,
         orderNumber: order.order_number,
-        payfast: { action, params },
+        payfast: buildPayfast(), // rebuilt: the order number may have changed on retry
       })
     }
 
-    return NextResponse.json({
-      orderId: order.id,
-      orderNumber: order.order_number,
-    })
-  } catch (e: unknown) {
-    if (e instanceof z.ZodError) {
-      return NextResponse.json({ error: e.errors }, { status: 400 })
-    }
-    const message = e instanceof Error ? e.message : 'Checkout failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+    return NextResponse.json({ orderId: order.id, orderNumber: order.order_number })
+  } catch (e) {
+    return serverError('store/checkout', e)
   }
 }

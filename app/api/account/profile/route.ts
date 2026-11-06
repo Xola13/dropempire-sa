@@ -1,155 +1,125 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase-server'
+import { z } from 'zod'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { ensureCustomer, getVerifiedUser } from '@/lib/account'
+import { forbiddenOrigin, isSameOrigin } from '@/lib/security/guards'
+import { limitByIp, noStore, parseBody, serverError } from '@/lib/http'
 
-// GET — fetch authenticated customer profile
+const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+
+const PatchSchema = z
+  .object({
+    name: z.string().transform(clean).pipe(z.string().min(2).max(100)),
+    phone: z
+      .string()
+      .trim()
+      .regex(/^\+?[0-9 ()-]{9,20}$/, 'Invalid phone number')
+      .nullable()
+      .or(z.literal('').transform(() => null)),
+    delivery_address: z
+      .object({
+        address: z.string().transform(clean).pipe(z.string().min(5).max(200)),
+        city: z.string().transform(clean).pipe(z.string().min(2).max(80)),
+        province: z.string().transform(clean).pipe(z.string().min(2).max(50)),
+        postalCode: z.string().trim().regex(/^\d{4}$/),
+      })
+      .nullable(),
+  })
+  .partial()
+  .strict()
+
+const unauthorized = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+// GET — the signed-in customer's profile (links/creates the record once the email is verified)
 export async function GET() {
   try {
-    const supabase = await createServerSupabaseClient()
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
+    const user = await getVerifiedUser()
+    if (!user) return unauthorized()
 
-    if (!session?.user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    const admin = getSupabaseAdmin()
-
-    // Find customer by auth_user_id or email
-    const { data: customer } = await admin
-      .from('customers')
-      .select('*')
-      .or(`auth_user_id.eq.${session.user.id},email.eq.${session.user.email}`)
-      .maybeSingle()
-
-    return NextResponse.json({ customer: customer || null })
-  } catch (err) {
-    console.error('[account/profile GET] error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    const customer = await ensureCustomer(getSupabaseAdmin(), user)
+    return NextResponse.json({ customer }, { headers: noStore })
+  } catch (e) {
+    return serverError('account/profile GET', e)
   }
 }
 
-// POST — create customer record (called after signup)
+// POST — kept for the signup flow. Identity comes from the verified session only;
+// nothing in the body (authUserId, email) is trusted.
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { authUserId, email, name, phone } = body
+    if (!isSameOrigin(req)) return forbiddenOrigin()
+    const limited = await limitByIp(req, 'account-profile', 20, 60)
+    if (limited) return limited
 
-    if (!authUserId || !email || !name) {
-      return NextResponse.json(
-        { error: 'Missing required fields' },
-        { status: 400 }
-      )
+    const user = await getVerifiedUser()
+    if (!user) return unauthorized()
+
+    const customer = await ensureCustomer(getSupabaseAdmin(), user)
+    if (!customer) {
+      // Email not yet verified: nothing is linked until it is.
+      return NextResponse.json({ customer: null, pendingVerification: true }, { status: 202 })
     }
-
-    const admin = getSupabaseAdmin()
-
-    // Upsert customer record
-    const { data: customer, error } = await admin
-      .from('customers')
-      .upsert(
-        {
-          email: email.toLowerCase(),
-          name,
-          phone: phone || null,
-          auth_user_id: authUserId,
-        },
-        {
-          onConflict: 'email',
-          ignoreDuplicates: false,
-        }
-      )
-      .select()
-      .single()
-
-    if (error) {
-      console.error('[account/profile POST] upsert error:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
     return NextResponse.json({ customer }, { status: 201 })
-  } catch (err) {
-    console.error('[account/profile POST] error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  } catch (e) {
+    return serverError('account/profile POST', e)
   }
 }
 
-// PATCH — update customer profile
+// PATCH — update the signed-in customer's own profile
 export async function PATCH(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient()
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
+    if (!isSameOrigin(req)) return forbiddenOrigin()
+    const user = await getVerifiedUser()
+    if (!user) return unauthorized()
 
-    if (!session?.user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const parsed = await parseBody(req, PatchSchema)
+    if (!parsed.ok) return parsed.response
+    if (Object.keys(parsed.data).length === 0) {
+      return NextResponse.json({ error: 'No fields to update' }, { status: 400 })
     }
-
-    const body = await req.json()
-    const { name, phone, delivery_address } = body
 
     const admin = getSupabaseAdmin()
-
-    const updates: Record<string, unknown> = {}
-    if (name !== undefined) updates.name = name.trim()
-    if (phone !== undefined) updates.phone = phone || null
-    if (delivery_address !== undefined) updates.delivery_address = delivery_address
-
-    const { data: customer, error } = await admin
-      .from('customers')
-      .update(updates)
-      .or(`auth_user_id.eq.${session.user.id},email.eq.${session.user.email}`)
-      .select()
-      .single()
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    const customer = await ensureCustomer(admin, user)
+    if (!customer) {
+      return NextResponse.json({ error: 'Please verify your email first' }, { status: 403 })
     }
 
-    return NextResponse.json({ customer })
-  } catch (err) {
-    console.error('[account/profile PATCH] error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    const { data, error } = await admin
+      .from('customers')
+      .update(parsed.data)
+      .eq('id', customer.id)
+      .eq('auth_user_id', user.id)
+      .select()
+      .single()
+    if (error) throw error
+
+    return NextResponse.json({ customer: data })
+  } catch (e) {
+    return serverError('account/profile PATCH', e)
   }
 }
 
-// DELETE — delete customer account
-export async function DELETE() {
+// DELETE — anonymise the customer record and delete the auth user
+export async function DELETE(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient()
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
-
-    if (!session?.user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    if (!isSameOrigin(req)) return forbiddenOrigin()
+    const user = await getVerifiedUser()
+    if (!user) return unauthorized()
 
     const admin = getSupabaseAdmin()
 
-    // Soft-delete: nullify auth_user_id and anonymise personal data
-    await admin
+    // Order history is retained for accounting; personal profile data is removed.
+    const { error: anonError } = await admin
       .from('customers')
-      .update({
-        auth_user_id: null,
-        phone: null,
-        delivery_address: null,
-        name: 'Deleted User',
-      })
-      .or(`auth_user_id.eq.${session.user.id},email.eq.${session.user.email}`)
+      .update({ auth_user_id: null, phone: null, delivery_address: null, name: 'Deleted User' })
+      .eq('auth_user_id', user.id)
+    if (anonError) throw anonError
 
-    // Delete auth user via Supabase admin API
-    const { error: deleteError } = await admin.auth.admin.deleteUser(session.user.id)
-    if (deleteError) {
-      console.error('[account/profile DELETE] auth delete error:', deleteError)
-      // Non-fatal — customer record already anonymised
-    }
+    const { error: deleteError } = await admin.auth.admin.deleteUser(user.id)
+    if (deleteError) throw deleteError
 
     return NextResponse.json({ success: true })
-  } catch (err) {
-    console.error('[account/profile DELETE] error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  } catch (e) {
+    return serverError('account/profile DELETE', e)
   }
 }

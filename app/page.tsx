@@ -2,6 +2,7 @@ import Link from 'next/link'
 import Hero from '@/components/store/Hero'
 import ProductCard from '@/components/store/ProductCard'
 import { supabaseAdmin } from '@/lib/supabase'
+import { PUBLIC_PRODUCT_LIST_COLUMNS } from '@/lib/products/public'
 import type { Product } from '@/types'
 import { ArrowRight, Zap, Shield, RotateCcw, Headphones } from 'lucide-react'
 
@@ -73,15 +74,19 @@ const features = [
   },
 ]
 
+// Served from the CDN and regenerated at most once a minute, so traffic spikes
+// don't turn into database load.
+export const revalidate = 60
+
 async function getFeaturedProducts(): Promise<Product[]> {
   try {
     const { data } = await supabaseAdmin
       .from('products')
-      .select('*')
+      .select(PUBLIC_PRODUCT_LIST_COLUMNS)
       .eq('is_published', true)
       .order('orders_count', { ascending: false })
       .limit(8)
-    return (data as Product[]) || []
+    return (data as unknown as Product[]) || []
   } catch {
     return []
   }

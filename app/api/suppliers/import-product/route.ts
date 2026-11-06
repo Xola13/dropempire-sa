@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { runListingAgent } from '@/lib/agents/listing-agent'
 import { recommendSellingPrice } from '@/lib/margin-calculator'
+import { requireAdmin } from '@/lib/security/guards'
+import { serverError } from '@/lib/http'
 
 export async function POST(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   try {
     const {
       supplier,
@@ -74,8 +79,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ product, listing })
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : 'Import failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+  } catch (e) {
+    return serverError('suppliers/import-product', e)
   }
 }

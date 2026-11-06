@@ -6,9 +6,13 @@ import * as bidorbuy from '@/lib/suppliers/bidorbuy-scraper'
 import { searchGumtreeWholesale } from '@/lib/suppliers/sa-wholesaler-scraper'
 import * as hivve from '@/lib/suppliers/hivve-scraper'
 import { calculateSuggestedPrice, calculateMargin } from '@/lib/suppliers/index'
+import { requireAdmin } from '@/lib/security/guards'
 
 // Search local SA suppliers — no AI key needed, completely free
 export async function GET(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   const query = req.nextUrl.searchParams.get('q') || ''
   const supplier = req.nextUrl.searchParams.get('supplier') || 'takealot'
 

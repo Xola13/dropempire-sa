@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { pricingAgent } from '@/lib/agents/pricing-agent'
 import { logAgentAction } from '@/lib/utils'
+import { requireAdminOrCron } from '@/lib/security/guards'
 
 export async function POST(req: NextRequest) {
+  const denied = await requireAdminOrCron(req)
+  if (denied) return denied
+
   const start = Date.now()
   try {
     const { productId } = await req.json()
@@ -82,7 +86,10 @@ export async function POST(req: NextRequest) {
 }
 
 // Batch optimize all products
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = await requireAdminOrCron(req)
+  if (denied) return denied
+
   const start = Date.now()
   let optimized = 0
 

@@ -9,6 +9,7 @@ import {
   Hr,
   Section,
 } from '@react-email/components'
+import { getSiteUrl } from '@/lib/site'
 
 interface Order {
   order_number: string
@@ -30,8 +31,7 @@ export default function OrderShippedEmail({
   order: Order | Record<string, unknown>
   trackingNumber: string
 }) {
-  const storeUrl =
-    process.env.NEXT_PUBLIC_STORE_URL || 'https://dropempiresa.co.za'
+  const storeUrl = getSiteUrl()
 
   const typedOrder = order as Order
 

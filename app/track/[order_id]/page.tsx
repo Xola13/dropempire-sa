@@ -58,12 +58,17 @@ export default function TrackOrderPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [manualId, setManualId] = useState('')
+  const [email, setEmail] = useState('')
 
-  const fetchTracking = async (id: string) => {
+  // Looking up an order requires the email it was placed with, so
+  // knowing an order number alone never reveals anyone's details.
+  const fetchTracking = async (id: string, mail: string) => {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch(`/api/orders/track?order_id=${encodeURIComponent(id)}`)
+      const res = await fetch(
+        `/api/orders/track?order=${encodeURIComponent(id.trim())}&email=${encodeURIComponent(mail.trim())}`
+      )
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Order not found')
       setData(json)
@@ -76,12 +81,13 @@ export default function TrackOrderPage() {
   }
 
   useEffect(() => {
-    if (orderId) {
-      fetchTracking(orderId)
-    } else {
-      setLoading(false)
-    }
+    if (orderId) setManualId(orderId)
+    setLoading(false)
   }, [orderId])
+
+  const submit = () => {
+    if (manualId && email) fetchTracking(manualId, email)
+  }
 
   const currentStatusIndex = data?.order
     ? statusOrder.indexOf(data.order.status)
@@ -92,22 +98,31 @@ export default function TrackOrderPage() {
       <div className="text-center mb-8">
         <h1 className="text-2xl font-bold text-[#0F172A]">Track Your Order</h1>
         <p className="text-gray-500 text-sm mt-1">
-          Enter your order number or reference to track your delivery
+          Enter your order number and the email you used at checkout
         </p>
       </div>
 
       {/* Manual search */}
-      <div className="flex gap-3 mb-8">
+      <div className="flex gap-3 mb-8 flex-wrap">
         <input
           type="text"
           value={manualId}
           onChange={e => setManualId(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && manualId && fetchTracking(manualId)}
-          placeholder="Enter order number (e.g. ORD-123456)"
+          onKeyDown={e => e.key === 'Enter' && submit()}
+          placeholder="Order number (e.g. ORD-7K3M9QXA)"
+          className="flex-1 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#F59E0B] focus:border-transparent"
+        />
+        <input
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && submit()}
+          placeholder="Email used at checkout"
+          autoComplete="email"
           className="flex-1 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#F59E0B] focus:border-transparent"
         />
         <button
-          onClick={() => manualId && fetchTracking(manualId)}
+          onClick={submit}
           className="px-5 py-3 bg-[#0F172A] text-white rounded-xl text-sm font-medium hover:bg-[#1E293B] transition-colors flex items-center gap-2"
         >
           <Search size={14} />

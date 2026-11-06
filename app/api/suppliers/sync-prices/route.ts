@@ -1,10 +1,14 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { searchProducts as searchAliExpress } from '@/lib/suppliers/aliexpress'
 import { searchProducts as searchCJDropshipping } from '@/lib/suppliers/cj-dropshipping'
 import { calculateMargin } from '@/lib/margin-calculator'
+import { requireAdminOrCron } from '@/lib/security/guards'
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const denied = await requireAdminOrCron(req)
+  if (denied) return denied
+
   let synced = 0
   let failed = 0
   let marginViolations = 0

@@ -13,9 +13,17 @@ export function formatZAR(amount: number): string {
   }).format(amount)
 }
 
+// 32-symbol alphabet without look-alikes (0/O, 1/I). 32 divides 256, so mapping
+// random bytes with `% 32` is unbiased. 8 symbols = 40 bits: collisions are
+// negligible at millions of orders (the DB unique index is the backstop) and
+// order numbers are not guessable or sequential.
+const ORDER_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
 export function generateOrderNumber(): string {
-  const num = Math.floor(10000 + Math.random() * 90000)
-  return `ORD-${num}`
+  const bytes = crypto.getRandomValues(new Uint8Array(8))
+  let id = ''
+  for (const b of bytes) id += ORDER_ALPHABET[b % 32]
+  return `ORD-${id}`
 }
 
 export function slugify(text: string): string {

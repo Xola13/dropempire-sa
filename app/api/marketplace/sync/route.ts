@@ -3,8 +3,12 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { getOrders as getTakealotOrders } from '@/lib/marketplace/takealot-seller'
 import { getOrders as getMakroOrders } from '@/lib/marketplace/makro-seller'
 import { generateOrderNumber } from '@/lib/utils'
+import { requireAdminOrCron } from '@/lib/security/guards'
 
 export async function GET(req: NextRequest) {
+  const denied = await requireAdminOrCron(req)
+  if (denied) return denied
+
   const supabase = getSupabaseAdmin()
   const synced: string[] = []
   const errors: string[] = []

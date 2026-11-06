@@ -20,14 +20,29 @@ const MANUAL_ONLY_SUPPLIERS = ['bidorbuy', 'hivve', 'gumtree', 'game', 'manual']
 export async function runFulfillmentAgent(orderId: string): Promise<void> {
   const start = Date.now()
 
-  const { data: order, error } = await supabaseAdmin
+  const { data: existing, error } = await supabaseAdmin
     .from('orders')
-    .select('*')
+    .select('id, payment_status, fulfillment_status')
     .eq('id', orderId)
-    .single()
+    .maybeSingle()
 
-  if (error || !order) throw new Error(`Order not found: ${orderId}`)
-  if (order.payment_status !== 'paid') throw new Error('Order not paid — refusing to fulfill')
+  if (error || !existing) throw new Error(`Order not found: ${orderId}`)
+  if (existing.payment_status !== 'paid') throw new Error('Order not paid — refusing to fulfill')
+
+  // Atomic claim: only one caller (webhook retry, admin button, cron sweep) can move an
+  // order from 'unfulfilled' to 'fulfilling'. Everyone else backs off, so supplier
+  // orders are never placed twice.
+  const { data: claimed, error: claimError } = await supabaseAdmin
+    .from('orders')
+    .update({ fulfillment_status: 'fulfilling', status: 'processing', updated_at: new Date().toISOString() })
+    .eq('id', orderId)
+    .eq('payment_status', 'paid')
+    .eq('fulfillment_status', 'unfulfilled')
+    .select('*')
+
+  if (claimError) throw claimError
+  const order = claimed?.[0]
+  if (!order) return // already claimed or fulfilled by another run
 
   await supabaseAdmin.from('agent_logs').insert({
     agent: 'fulfillment',
@@ -51,11 +66,6 @@ export async function runFulfillmentAgent(orderId: string): Promise<void> {
     variant_id?: string
     shipping_service?: string
   }>
-
-  await supabaseAdmin
-    .from('orders')
-    .update({ fulfillment_status: 'fulfilling', status: 'processing', updated_at: new Date().toISOString() })
-    .eq('id', orderId)
 
   const shippingAddr = order.delivery_address as {
     name: string; phone: string; email: string
@@ -305,6 +315,8 @@ export async function checkAndUpdateTracking(): Promise<void> {
     .from('supplier_orders')
     .select('*, orders(*)')
     .in('status', ['confirmed', 'placed'])
+    .order('placed_at', { ascending: true })
+    .limit(200)
 
   if (!supplierOrders) return
 
@@ -350,4 +362,45 @@ export async function checkAndUpdateTracking(): Promise<void> {
       console.error(`Tracking check error for ${so.id}:`, e)
     }
   }
+}
+
+/**
+ * Safety net for paid orders that were never picked up (e.g. the process died
+ * between payment confirmation and fulfillment). Only touches 'unfulfilled'
+ * orders, which have placed nothing with suppliers yet, so retrying is safe.
+ * Orders stuck in 'fulfilling' may have partially ordered and need a human.
+ */
+export async function retryUnfulfilledPaidOrders(maxOrders = 10): Promise<{ retried: number; stuck: number }> {
+  const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+
+  const { data: pending } = await supabaseAdmin
+    .from('orders')
+    .select('id')
+    .eq('payment_status', 'paid')
+    .eq('fulfillment_status', 'unfulfilled')
+    .lt('updated_at', cutoff)
+    .order('created_at', { ascending: true })
+    .limit(maxOrders)
+
+  let retried = 0
+  for (const { id } of pending ?? []) {
+    try {
+      await runFulfillmentAgent(id)
+      retried++
+    } catch (e) {
+      console.error(`Fulfillment retry failed for ${id}:`, e)
+    }
+  }
+
+  const stuckCutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const { count: stuck } = await supabaseAdmin
+    .from('orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('payment_status', 'paid')
+    .eq('fulfillment_status', 'fulfilling')
+    .eq('status', 'processing')
+    .lt('updated_at', stuckCutoff)
+
+  if (stuck) console.warn(`${stuck} paid order(s) stuck in 'fulfilling' for over an hour; needs manual review`)
+  return { retried, stuck: stuck ?? 0 }
 }

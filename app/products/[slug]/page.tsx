@@ -1,6 +1,8 @@
 import { notFound } from 'next/navigation'
 import Image from 'next/image'
+import Link from 'next/link'
 import { supabaseAdmin } from '@/lib/supabase'
+import { PUBLIC_PRODUCT_COLUMNS, PUBLIC_PRODUCT_LIST_COLUMNS } from '@/lib/products/public'
 import type { Product } from '@/types'
 import { formatZAR, getDeliveryLabel } from '@/lib/utils'
 import ProductCard from '@/components/store/ProductCard'
@@ -11,15 +13,23 @@ interface PageProps {
   params: Promise<{ slug: string }>
 }
 
+export const revalidate = 60
+
+// Pre-render nothing at build time; each product page is generated on first request
+// and then served from cache (ISR), so traffic spikes don't hit the database.
+export async function generateStaticParams() {
+  return []
+}
+
 async function getProduct(slug: string): Promise<Product | null> {
   const { data, error } = await supabaseAdmin
     .from('products')
-    .select('*')
+    .select(PUBLIC_PRODUCT_COLUMNS)
     .eq('slug', slug)
     .eq('is_published', true)
     .single()
   if (error || !data) return null
-  return data as Product
+  return data as unknown as Product
 }
 
 async function getRelatedProducts(
@@ -28,12 +38,12 @@ async function getRelatedProducts(
 ): Promise<Product[]> {
   const { data } = await supabaseAdmin
     .from('products')
-    .select('*')
+    .select(PUBLIC_PRODUCT_LIST_COLUMNS)
     .eq('category', category)
     .eq('is_published', true)
     .neq('id', excludeId)
     .limit(4)
-  return (data as Product[]) || []
+  return (data as unknown as Product[]) || []
 }
 
 export default async function ProductPage({ params }: PageProps) {
@@ -62,9 +72,9 @@ export default async function ProductPage({ params }: PageProps) {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Breadcrumb */}
       <nav className="text-sm text-gray-500 mb-6">
-        <a href="/" className="hover:text-amber-600">
+        <Link href="/" className="hover:text-amber-600">
           Home
-        </a>{' '}
+        </Link>{' '}
         /{' '}
         <a
           href={`/products?category=${encodeURIComponent(product.category)}`}

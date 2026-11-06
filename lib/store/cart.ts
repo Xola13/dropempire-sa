@@ -51,6 +51,12 @@ export const useCartStore = create<CartStore>()(
       itemCount: () =>
         get().items.reduce((sum, i) => sum + i.qty, 0),
     }),
-    { name: 'dropempire-cart' }
+    {
+      name: 'dropempire-cart',
+      // Don't read localStorage during hydration (the server always renders an empty
+      // cart, so a returning visitor would cause a hydration mismatch). The root layout
+      // calls rehydrate() after mount instead.
+      skipHydration: true,
+    }
   )
 )

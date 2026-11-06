@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runPricingAgent } from '@/lib/agents/pricing-agent'
+import { requireCron } from '@/lib/security/guards'
+import { serverError } from '@/lib/http'
+
+export const maxDuration = 300
 
 export async function GET(req: NextRequest) {
-  const secret = req.headers.get('authorization')
-  if (secret !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = await requireCron(req)
+  if (denied) return denied
 
   try {
     const result = await runPricingAgent()
     return NextResponse.json(result)
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : 'Price sync failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+  } catch (e) {
+    return serverError('cron/sync-prices', e)
   }
 }

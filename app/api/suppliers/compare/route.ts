@@ -5,6 +5,7 @@ import * as game from '@/lib/suppliers/game-scraper'
 import * as bidorbuy from '@/lib/suppliers/bidorbuy-scraper'
 import * as hivve from '@/lib/suppliers/hivve-scraper'
 import { calculateSuggestedPrice, calculateMargin } from '@/lib/suppliers/index'
+import { requireAdmin } from '@/lib/security/guards'
 
 interface CompareProduct {
   id: string
@@ -66,6 +67,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | []> {
 }
 
 export async function GET(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   const query = req.nextUrl.searchParams.get('q') || ''
   if (!query.trim()) return NextResponse.json({ error: 'q is required' }, { status: 400 })
 

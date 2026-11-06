@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as aliexpress from '@/lib/suppliers/aliexpress'
 import * as cj from '@/lib/suppliers/cj-dropshipping'
+import { requireAdmin } from '@/lib/security/guards'
 
 export async function GET(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   const keyword = req.nextUrl.searchParams.get('q') || ''
   const supplier = req.nextUrl.searchParams.get('supplier') || 'all'
 

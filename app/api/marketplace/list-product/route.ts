@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { createListing as takealotCreateListing } from '@/lib/marketplace/takealot-seller'
 import { createListing as makroCreateListing } from '@/lib/marketplace/makro-seller'
 import { slugify } from '@/lib/utils'
+import { requireAdmin } from '@/lib/security/guards'
 
 interface ListProductBody {
   productId: string
@@ -13,6 +14,9 @@ interface ListProductBody {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   try {
     const body: ListProductBody = await req.json()
     const { productId, marketplace, sellingPrice, stock, rrp } = body

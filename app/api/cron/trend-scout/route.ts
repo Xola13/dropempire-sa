@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runTrendScoutAgent } from '@/lib/agents/trend-scout-agent'
 import { supabaseAdmin } from '@/lib/supabase'
+import { requireCron } from '@/lib/security/guards'
+import { serverError } from '@/lib/http'
+
+export const maxDuration = 300
 
 export async function GET(req: NextRequest) {
-  const secret = req.headers.get('authorization')
-  if (secret !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = await requireCron(req)
+  if (denied) return denied
 
   try {
     const trends = await runTrendScoutAgent()
@@ -22,8 +24,7 @@ export async function GET(req: NextRequest) {
     })
 
     return NextResponse.json({ trends, count: trends.length })
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : 'Trend scout failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+  } catch (e) {
+    return serverError('cron/trend-scout', e)
   }
 }

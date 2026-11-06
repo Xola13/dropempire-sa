@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Inter } from 'next/font/google'
 import './globals.css'
 import Navbar from '@/components/store/Navbar'
 import CartDrawer from '@/components/store/CartDrawer'
 import Footer from '@/components/store/Footer'
+import { useCartStore } from '@/lib/store/cart'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -15,6 +16,10 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   const [cartOpen, setCartOpen] = useState(false)
+
+  useEffect(() => {
+    useCartStore.persist.rehydrate()
+  }, [])
 
   return (
     <html lang="en-ZA">
@@ -27,7 +32,10 @@ export default function RootLayout({
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
       </head>
-      <body className={`${inter.className} bg-gray-50 min-h-screen flex flex-col`}>
+      <body
+        suppressHydrationWarning // browser extensions often inject attributes into <body>
+        className={`${inter.className} bg-gray-50 min-h-screen flex flex-col`}
+      >
         <Navbar onCartOpen={() => setCartOpen(true)} />
         <main className="flex-1">{children}</main>
         <Footer />

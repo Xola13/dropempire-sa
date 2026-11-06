@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { Suspense, useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import ProductCard from '@/components/store/ProductCard'
 import { Search, SlidersHorizontal, ChevronDown, Loader2 } from 'lucide-react'
@@ -27,7 +27,7 @@ const sortOptions = [
   { label: 'Most Popular', value: 'popular', order: 'desc' },
 ]
 
-export default function ProductsPage() {
+function ProductsContent() {
   const searchParams = useSearchParams()
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
@@ -300,5 +300,15 @@ export default function ProductsPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+// useSearchParams() must sit under a Suspense boundary or the page cannot be
+// prerendered (the production build fails).
+export default function ProductsPage() {
+  return (
+    <Suspense fallback={<div className="min-h-[60vh]" />}>
+      <ProductsContent />
+    </Suspense>
   )
 }

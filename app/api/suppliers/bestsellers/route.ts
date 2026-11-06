@@ -7,6 +7,7 @@ import { searchProducts as searchGame } from '@/lib/suppliers/game-scraper'
 import { searchProducts as searchBidorbuy, getBestDeals as getBidorbuyDeals } from '@/lib/suppliers/bidorbuy-scraper'
 import type { DHgateProduct } from '@/lib/suppliers/dhgate-scraper'
 import type { AlibabaProduct } from '@/lib/suppliers/alibaba-scraper'
+import { requireAdmin } from '@/lib/security/guards'
 
 const USD_TO_ZAR = parseFloat(process.env.NEXT_PUBLIC_EXCHANGE_RATE_USD_ZAR || '18.5')
 
@@ -160,6 +161,9 @@ function normalizeLocalSA(
 }
 
 export async function GET(req: NextRequest) {
+  const denied = await requireAdmin(req)
+  if (denied) return denied
+
   const { searchParams } = new URL(req.url)
   const q = searchParams.get('q') || ''
   // source=local → SA only; source=wholesale → international only; source=all → everything

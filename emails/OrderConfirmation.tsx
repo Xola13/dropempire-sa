@@ -11,6 +11,7 @@ import {
   Column,
   Section,
 } from '@react-email/components'
+import { getSiteUrl } from '@/lib/site'
 
 interface OrderItem {
   name: string
@@ -37,8 +38,7 @@ export default function OrderConfirmationEmail({
 }: {
   order: Order
 }) {
-  const storeUrl =
-    process.env.NEXT_PUBLIC_STORE_URL || 'https://dropempiresa.co.za'
+  const storeUrl = getSiteUrl()
 
   return (
     <Html>
