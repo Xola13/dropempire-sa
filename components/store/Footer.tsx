@@ -11,11 +11,9 @@ const footerLinks = {
   Support: [
     { label: 'Track Order', href: '/track' },
     { label: 'Returns Policy', href: '/returns' },
-    { label: 'FAQ', href: '/faq' },
     { label: 'Contact Us', href: '/contact' },
   ],
   Company: [
-    { label: 'About Us', href: '/about' },
     { label: 'Privacy Policy', href: '/privacy' },
     { label: 'Terms of Service', href: '/terms' },
   ],
