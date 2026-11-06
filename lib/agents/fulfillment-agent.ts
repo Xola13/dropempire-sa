@@ -279,6 +279,13 @@ export async function runFulfillmentAgent(
       const autoOrder = PLAYWRIGHT_SUPPLIERS[item.supplier]
       const productUrl = item.supplier_product_url || ''
 
+      if (process.env.PLAYWRIGHT_AUTO_ORDER !== 'true') {
+        // Browser automation cannot run on Vercel and logs into a personal retail account.
+        // Off by default: the owner is emailed to place the order by hand.
+        manual.push({ item, reason: `Automatic ${item.supplier} ordering is switched off: please order it yourself` })
+        continue
+      }
+
       if (!productUrl) {
         manual.push({ item, reason: 'No product URL stored for automatic ordering' })
         continue

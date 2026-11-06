@@ -54,7 +54,7 @@ const categories = [
 const features = [
   {
     icon: Zap,
-    title: 'Fast SA Delivery',
+    title: 'Nationwide Delivery',
     desc: 'Nationwide delivery across South Africa',
   },
   {
@@ -64,13 +64,13 @@ const features = [
   },
   {
     icon: RotateCcw,
-    title: '30-Day Returns',
-    desc: 'Hassle-free returns on all orders',
+    title: 'Returns & Refunds',
+    desc: 'Your consumer rights are protected',
   },
   {
     icon: Headphones,
-    title: 'SA Support',
-    desc: 'Local customer support team',
+    title: 'Customer Support',
+    desc: 'Email us about any order',
   },
 ]
 
@@ -206,7 +206,7 @@ export default async function HomePage() {
             Ready to Shop?
           </h2>
           <p className="text-amber-900 mt-3 text-lg">
-            Thousands of products available for delivery across South Africa.
+            Browse our range, delivered across South Africa.
           </p>
           <Link
             href="/products"

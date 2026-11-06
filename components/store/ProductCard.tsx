@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { motion } from 'framer-motion'
-import { ShoppingCart, Star } from 'lucide-react'
+import { ShoppingCart } from 'lucide-react'
 import { formatZAR, getDeliveryLabel } from '@/lib/utils'
 import { useCartStore } from '@/lib/store/cart'
 import type { Product } from '@/types'
@@ -71,16 +71,8 @@ export default function ProductCard({ product }: { product: Product }) {
           </h3>
         </Link>
 
-        {product.orders_count > 0 && (
-          <div className="flex items-center gap-1 mt-1.5">
-            <Star
-              size={12}
-              className="text-yellow-400 fill-yellow-400"
-            />
-            <span className="text-xs text-gray-500">
-              {product.orders_count} sold
-            </span>
-          </div>
+        {product.orders_count >= 5 && (
+          <p className="text-xs text-gray-500 mt-1.5">{product.orders_count} sold</p>
         )}
 
         <div className="flex items-center justify-between mt-3">
