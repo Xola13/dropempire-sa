@@ -1,10 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { createMessage, untrusted, UNTRUSTED_NOTICE } from '@/lib/ai'
 import { supabaseAdmin } from '@/lib/supabase'
 import * as aliexpress from '@/lib/suppliers/aliexpress'
 import * as cj from '@/lib/suppliers/cj-dropshipping'
 import { calculateMargin, recommendSellingPrice } from '@/lib/margin-calculator'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export interface SourcingResult {
   bestSupplier: 'aliexpress' | 'cj' | 'makro'
@@ -121,14 +120,15 @@ export async function runSourcingAgent(
   }
 
   // Ask Claude to score and select best option
-  const analysis = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const analysis = await createMessage('sourcing', {
     max_tokens: 2048,
     system: `You are a SA dropshipping product analyst. Score each supplier option 0-100 based on:
 - Profit margin (40% weight): higher margin = higher score
 - Delivery speed to SA (30% weight): faster = higher score
 - Supplier reliability (20% weight): CJ > AliExpress for reliability, higher rating = higher score
 - Product quality indicators (10% weight): rating, reviews
+
+${UNTRUSTED_NOTICE}
 
 Return ONLY valid JSON with this structure:
 {
@@ -144,7 +144,7 @@ Return ONLY valid JSON with this structure:
         role: 'user',
         content: `Analyse these supplier options for "${keyword}" and select the best one:
 
-${JSON.stringify(options, null, 2)}
+${untrusted(JSON.stringify(options, null, 2), 12000)}
 
 Pick the option that maximises profit margin while maintaining acceptable delivery speed to South Africa.`,
       },

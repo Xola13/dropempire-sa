@@ -1,7 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { createMessage } from '@/lib/ai'
 import { supabaseAdmin } from '@/lib/supabase'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export interface TrendingProduct {
   name: string
@@ -16,8 +15,7 @@ export interface TrendingProduct {
 export async function runTrendScoutAgent(): Promise<TrendingProduct[]> {
   const start = Date.now()
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const message = await createMessage('trend-scout', {
     max_tokens: 4096,
     system: `You are a South African e-commerce trend analyst specialising in dropshipping.
 Your job is to identify the top 20 trending product opportunities for a South African dropshipping store right now.

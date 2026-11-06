@@ -1,10 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { createMessage, untrusted, UNTRUSTED_NOTICE } from '@/lib/ai'
 import { supabaseAdmin } from '@/lib/supabase'
 import { calculateMargin } from '@/lib/margin-calculator'
 import * as aliexpress from '@/lib/suppliers/aliexpress'
 import * as cj from '@/lib/suppliers/cj-dropshipping'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 // Single-product pricing optimisation (used by price-optimizer API route)
 export async function pricingAgent(params: {
@@ -21,16 +20,15 @@ export async function pricingAgent(params: {
 }> {
   const { productName, costPrice, currentPrice, supplier, category, ordersCount } = params
 
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const response = await createMessage('pricing', {
     max_tokens: 512,
     system:
-      'You are a pricing strategist for a South African dropshipping store. Enforce minimum 20% margin. Return ONLY valid JSON.',
+      `You are a pricing strategist for a South African dropshipping store. Enforce minimum 20% margin. Return ONLY valid JSON. ${UNTRUSTED_NOTICE}`,
     messages: [
       {
         role: 'user',
         content: `Optimise the price for this product:
-Product: ${productName}
+Product: ${untrusted(productName, 300)}
 Category: ${category}
 Supplier: ${supplier}
 Cost price (ZAR): R${costPrice.toFixed(2)}
@@ -125,14 +123,13 @@ export async function runPricingAgent(): Promise<{
         unpublished++
         flagged++
       } else if (marginPercent < 20) {
-        const analysis = await anthropic.messages.create({
-          model: 'claude-sonnet-4-20250514',
+        const analysis = await createMessage('pricing', {
           max_tokens: 512,
-          system: 'You are a pricing advisor for a SA dropshipping store. Return ONLY JSON.',
+          system: `You are a pricing advisor for a SA dropshipping store. Return ONLY JSON. ${UNTRUSTED_NOTICE}`,
           messages: [
             {
               role: 'user',
-              content: `Product: ${product.name}
+              content: `Product: ${untrusted(product.name, 300)}
 Current selling price: R${product.selling_price}
 New cost: R${currentCostZAR.toFixed(2)}
 Current margin: ${marginPercent.toFixed(1)}%
@@ -147,7 +144,15 @@ Recommend: { "newPrice": number, "reasoning": "string" }`,
         const jsonMatch = text.match(/\{[\s\S]*\}/)
         if (jsonMatch) {
           const { newPrice } = JSON.parse(jsonMatch[0])
-          if (newPrice && newPrice !== product.selling_price) {
+          // The model's number goes straight into the live price, so it must be a sane number first.
+          const priceOk =
+            typeof newPrice === 'number' &&
+            Number.isFinite(newPrice) &&
+            newPrice > 0 &&
+            newPrice <= product.selling_price * 3
+          if (newPrice && !priceOk) {
+            console.warn(JSON.stringify({ level: 'warn', scope: 'pricing-agent', reason: 'rejected_ai_price', productId: product.id }))
+          } else if (priceOk && newPrice !== product.selling_price) {
             const newShippingCost = product.supplier_shipping_days > 10 ? 85 : 65
             await supabaseAdmin
               .from('products')
