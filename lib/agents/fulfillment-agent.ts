@@ -7,6 +7,7 @@ import { sendEmail } from '@/lib/resend'
 import OrderConfirmationEmail from '@/emails/OrderConfirmation'
 import OrderShippedEmail from '@/emails/OrderShipped'
 import React from 'react'
+import { buildShippingAddress } from '@/lib/orders/shipping'
 
 // Suppliers handled by Playwright auto-ordering
 const PLAYWRIGHT_SUPPLIERS: Record<string, (order: Parameters<typeof autoOrderTakealot>[0]) => Promise<{ success: boolean; orderNumber?: string; error?: string }>> = {
@@ -67,10 +68,7 @@ export async function runFulfillmentAgent(orderId: string): Promise<void> {
     shipping_service?: string
   }>
 
-  const shippingAddr = order.delivery_address as {
-    name: string; phone: string; email: string
-    address: string; city: string; province: string; postalCode: string
-  }
+  const shippingAddr = buildShippingAddress(order)
 
   // Split items by supplier type
   const aliItems = items.filter(i => i.supplier === 'aliexpress')
