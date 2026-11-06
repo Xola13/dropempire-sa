@@ -3,4 +3,4 @@
 
 ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_fulfillment_status_check;
 ALTER TABLE orders ADD CONSTRAINT orders_fulfillment_status_check
-  CHECK (fulfillment_status IN ('unfulfilled', 'fulfilling', 'fulfilled', 'needs_attention'));
+  CHECK (fulfillment_status IN ('unfulfilled', 'fulfilling', 'fulfilled', 'cancelled', 'needs_attention'));
