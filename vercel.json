@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/check-orders",
-      "schedule": "0 */4 * * *"
+      "schedule": "0 2 * * *"
     },
     {
       "path": "/api/cron/trend-scout",
