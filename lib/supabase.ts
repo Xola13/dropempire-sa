@@ -114,7 +114,7 @@ export type Database = {
           payment_method: 'payfast' | 'yoco'
           payment_status: 'pending' | 'paid' | 'failed' | 'refunded'
           payment_reference: string | null
-          fulfillment_status: 'unfulfilled' | 'fulfilling' | 'fulfilled'
+          fulfillment_status: 'unfulfilled' | 'fulfilling' | 'fulfilled' | 'needs_attention'
           status: 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled'
           tracking_number: string | null
           tracking_url: string | null

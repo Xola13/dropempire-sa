@@ -7,7 +7,9 @@ import { sendEmail } from '@/lib/resend'
 import OrderConfirmationEmail from '@/emails/OrderConfirmation'
 import OrderShippedEmail from '@/emails/OrderShipped'
 import React from 'react'
+import type { Order } from '@/types'
 import { buildShippingAddress } from '@/lib/orders/shipping'
+import { notifyOwner } from '@/lib/orders/notify'
 
 // Suppliers handled by Playwright auto-ordering
 const PLAYWRIGHT_SUPPLIERS: Record<string, (order: Parameters<typeof autoOrderTakealot>[0]) => Promise<{ success: boolean; orderNumber?: string; error?: string }>> = {
@@ -18,7 +20,73 @@ const PLAYWRIGHT_SUPPLIERS: Record<string, (order: Parameters<typeof autoOrderTa
 // Suppliers with no automation possible (BidOrBuy listings vary, Hivve B2B needs contact)
 const MANUAL_ONLY_SUPPLIERS = ['bidorbuy', 'hivve', 'gumtree', 'game', 'manual']
 
-export async function runFulfillmentAgent(orderId: string): Promise<void> {
+// Must match supplier_orders_supplier_check (migration 005).
+const SUPPLIER_ORDER_SUPPLIERS = ['aliexpress', 'cj', 'makro', 'takealot', 'game', 'bidorbuy', 'hivve', 'gumtree', 'manual']
+
+type OrderItem = {
+  product_id: string
+  name: string
+  qty: number
+  unit_price: number
+  supplier_cost: number
+  supplier: string
+  supplier_product_id: string
+  supplier_product_url?: string
+  variant_id?: string
+  shipping_service?: string
+}
+
+/** An item the agent could not order by itself, and why. Every one of these reaches the owner. */
+type ManualItem = { item: OrderItem; reason: string }
+
+/**
+ * 'manual' (default): a paid order waits for the owner to approve it in the admin
+ * before any money is spent with a supplier. 'auto': fulfil as soon as payment clears.
+ */
+export function getFulfillmentMode(): 'manual' | 'auto' {
+  return process.env.FULFILLMENT_MODE === 'auto' ? 'auto' : 'manual'
+}
+
+async function sendCustomerConfirmation(order: Order, orderId: string) {
+  try {
+    await sendEmail({
+      to: order.customer_email,
+      subject: `Order ${order.order_number} Confirmed — DropEmpire SA`,
+      react: React.createElement(OrderConfirmationEmail, { order }),
+    })
+  } catch (e) {
+    console.error('Email send error:', e)
+    await supabaseAdmin.from('agent_logs').insert({
+      agent: 'fulfillment', action: 'customer_email_failed',
+      input: { orderId }, output: null, success: false,
+      error: e instanceof Error ? e.message : String(e), duration_ms: 0,
+    })
+  }
+}
+
+/** Manual mode: tell the owner a paid order is waiting, and confirm receipt to the customer. */
+async function requestApproval(orderId: string): Promise<void> {
+  const { data: order } = await supabaseAdmin.from('orders').select('*').eq('id', orderId).maybeSingle()
+  if (!order) return
+
+  await supabaseAdmin.from('agent_logs').insert({
+    agent: 'fulfillment', action: 'awaiting_approval',
+    input: { orderId, orderNumber: order.order_number }, output: null,
+    reasoning: 'FULFILLMENT_MODE is manual: waiting for owner approval before ordering from suppliers',
+    success: true, duration_ms: 0,
+  })
+
+  await notifyOwner(`Approval needed: paid order ${order.order_number}`, [
+    `Order ${order.order_number} has been paid (R${Number(order.total).toFixed(2)}) and is waiting for your approval.`,
+    'Open Admin → Orders and click "Approve & order". Nothing has been bought from suppliers yet.',
+  ])
+  await sendCustomerConfirmation(order, orderId)
+}
+
+export async function runFulfillmentAgent(
+  orderId: string,
+  opts: { approved?: boolean } = {}
+): Promise<void> {
   const start = Date.now()
 
   const { data: existing, error } = await supabaseAdmin
@@ -29,6 +97,12 @@ export async function runFulfillmentAgent(orderId: string): Promise<void> {
 
   if (error || !existing) throw new Error(`Order not found: ${orderId}`)
   if (existing.payment_status !== 'paid') throw new Error('Order not paid — refusing to fulfill')
+
+  // Spending money with suppliers needs an explicit owner action unless auto mode is on.
+  if (getFulfillmentMode() === 'manual' && !opts.approved) {
+    await requestApproval(orderId)
+    return
+  }
 
   // Atomic claim: only one caller (webhook retry, admin button, cron sweep) can move an
   // order from 'unfulfilled' to 'fulfilling'. Everyone else backs off, so supplier
@@ -55,256 +129,307 @@ export async function runFulfillmentAgent(orderId: string): Promise<void> {
     duration_ms: 0,
   })
 
-  const items = order.items as Array<{
-    product_id: string
-    name: string
-    qty: number
-    unit_price: number
-    supplier_cost: number
-    supplier: string
-    supplier_product_id: string
-    supplier_product_url?: string
-    variant_id?: string
-    shipping_service?: string
-  }>
+  const manual: ManualItem[] = []
+  let autoOrdered = 0
 
-  const shippingAddr = buildShippingAddress(order)
+  try {
+    const items = order.items as OrderItem[]
+    const shippingAddr = buildShippingAddress(order)
 
-  // Split items by supplier type
-  const aliItems = items.filter(i => i.supplier === 'aliexpress')
-  const cjItems = items.filter(i => i.supplier === 'cj')
-  const autoSAItems = items.filter(i => i.supplier in PLAYWRIGHT_SUPPLIERS)
-  const manualItems = items.filter(i => MANUAL_ONLY_SUPPLIERS.includes(i.supplier))
+    // Split items by supplier type
+    const aliItems = items.filter(i => i.supplier === 'aliexpress')
+    const cjItems = items.filter(i => i.supplier === 'cj')
+    const autoSAItems = items.filter(i => i.supplier in PLAYWRIGHT_SUPPLIERS)
+    for (const item of items.filter(i => MANUAL_ONLY_SUPPLIERS.includes(i.supplier))) {
+      manual.push({ item, reason: `${item.supplier} has no automatic ordering` })
+    }
+    // An item whose supplier matches nothing above must never be dropped silently.
+    for (const item of items.filter(
+      i =>
+        i.supplier !== 'aliexpress' &&
+        i.supplier !== 'cj' &&
+        !(i.supplier in PLAYWRIGHT_SUPPLIERS) &&
+        !MANUAL_ONLY_SUPPLIERS.includes(i.supplier)
+    )) {
+      manual.push({ item, reason: `Unsupported supplier "${item.supplier}"` })
+    }
 
-  // ── AliExpress orders (automatic) ──────────────────────────────────────
-  for (const item of aliItems) {
-    try {
-      const details = await aliexpress.getProductDetails(item.supplier_product_id)
-      const currentPrice =
-        parseFloat(
-          details?.aliexpress_ds_product_get_response?.result
-            ?.ae_item_sku_info_dtos?.ae_item_sku_info_d_t_o?.[0]
-            ?.sku_price || '999'
-        ) * 18.5
+    // ── AliExpress orders (automatic) ──────────────────────────────────────
+    for (const item of aliItems) {
+      try {
+        const details = await aliexpress.getProductDetails(item.supplier_product_id)
+        const currentPrice =
+          parseFloat(
+            details?.aliexpress_ds_product_get_response?.result
+              ?.ae_item_sku_info_dtos?.ae_item_sku_info_d_t_o?.[0]
+              ?.sku_price || '999'
+          ) * 18.5
 
-      if (currentPrice > item.supplier_cost * 1.1) {
-        const newMargin = ((item.unit_price - currentPrice) / item.unit_price) * 100
-        if (newMargin < 10) {
-          await supabaseAdmin.from('agent_logs').insert({
-            agent: 'fulfillment', action: 'price_mismatch',
-            input: { orderId, item: item.name, expectedCost: item.supplier_cost, currentCost: currentPrice },
-            output: { action: 'skipped_needs_review' },
-            reasoning: `Supplier price increased to R${currentPrice.toFixed(2)}, margin below 10%`,
-            success: false, duration_ms: Date.now() - start,
+        if (currentPrice > item.supplier_cost * 1.1) {
+          const newMargin = ((item.unit_price - currentPrice) / item.unit_price) * 100
+          if (newMargin < 10) {
+            const reason = `Supplier price rose to R${currentPrice.toFixed(2)} (was R${item.supplier_cost.toFixed(2)}); margin below 10%`
+            await supabaseAdmin.from('agent_logs').insert({
+              agent: 'fulfillment', action: 'price_mismatch',
+              input: { orderId, item: item.name, expectedCost: item.supplier_cost, currentCost: currentPrice },
+              output: { action: 'skipped_needs_review' },
+              reasoning: reason,
+              success: false, duration_ms: Date.now() - start,
+            })
+            manual.push({ item, reason })
+            continue
+          }
+        }
+
+        const result = await aliexpress.placeOrder({
+          productId: item.supplier_product_id,
+          skuId: item.variant_id || '',
+          quantity: item.qty,
+          shippingAddress: {
+            name: shippingAddr.name, phone: shippingAddr.phone,
+            address: shippingAddr.address, city: shippingAddr.city,
+            province: shippingAddr.province, postalCode: shippingAddr.postalCode,
+            country: 'ZA',
+          },
+          logisticsService: item.shipping_service || 'AliExpress Standard Shipping',
+        })
+
+        const supplierOrderId =
+          result?.aliexpress_ds_order_create_response?.result?.order_list?.[0]?.order_id
+
+        if (!supplierOrderId) {
+          manual.push({
+            item,
+            reason: 'AliExpress returned no order id. The order may or may not have been placed: check your AliExpress orders BEFORE ordering again',
           })
           continue
         }
-      }
 
-      const result = await aliexpress.placeOrder({
-        productId: item.supplier_product_id,
-        skuId: item.variant_id || '',
-        quantity: item.qty,
-        shippingAddress: {
-          name: shippingAddr.name, phone: shippingAddr.phone,
-          address: shippingAddr.address, city: shippingAddr.city,
-          province: shippingAddr.province, postalCode: shippingAddr.postalCode,
-          country: 'ZA',
-        },
-        logisticsService: item.shipping_service || 'AliExpress Standard Shipping',
-      })
-
-      const supplierOrderId =
-        result?.aliexpress_ds_order_create_response?.result?.order_list?.[0]?.order_id
-
-      await supabaseAdmin.from('supplier_orders').insert({
-        order_id: orderId, supplier: 'aliexpress',
-        supplier_order_id: supplierOrderId?.toString(),
-        items: [item], total_cost: item.supplier_cost * item.qty,
-        shipping_address: shippingAddr, status: 'confirmed',
-        placed_at: new Date().toISOString(),
-      })
-    } catch (e: unknown) {
-      const errorMessage = e instanceof Error ? e.message : String(e)
-      await supabaseAdmin.from('agent_logs').insert({
-        agent: 'fulfillment', action: 'aliexpress_order_error',
-        input: { orderId, item: item.name }, output: null,
-        reasoning: errorMessage, success: false, error: errorMessage,
-        duration_ms: Date.now() - start,
-      })
-    }
-  }
-
-  // ── CJ Dropshipping orders (automatic) ─────────────────────────────────
-  if (cjItems.length > 0) {
-    try {
-      const result = await cj.createOrder({
-        orderNumber: order.order_number,
-        shippingAddress: {
-          name: shippingAddr.name, phone: shippingAddr.phone,
-          email: order.customer_email, address: shippingAddr.address,
-          city: shippingAddr.city, province: shippingAddr.province,
-          postalCode: shippingAddr.postalCode,
-        },
-        products: cjItems.map(i => ({
-          vid: i.variant_id || i.supplier_product_id,
-          quantity: i.qty,
-          shippingName: i.shipping_service || 'CJPacket Ordinary',
-        })),
-      })
-
-      await supabaseAdmin.from('supplier_orders').insert({
-        order_id: orderId, supplier: 'cj',
-        supplier_order_id: result?.data?.orderId,
-        items: cjItems,
-        total_cost: cjItems.reduce((sum, i) => sum + i.supplier_cost * i.qty, 0),
-        shipping_address: shippingAddr, status: 'confirmed',
-        placed_at: new Date().toISOString(),
-      })
-    } catch (e: unknown) {
-      const errorMessage = e instanceof Error ? e.message : String(e)
-      console.error('CJ order error:', e)
-      await supabaseAdmin.from('agent_logs').insert({
-        agent: 'fulfillment', action: 'cj_order_error',
-        input: { orderId }, output: null, success: false,
-        error: errorMessage, duration_ms: Date.now() - start,
-      })
-    }
-  }
-
-  // ── Takealot / Makro — Playwright auto-ordering ────────────────────────
-  for (const item of autoSAItems) {
-    const autoOrder = PLAYWRIGHT_SUPPLIERS[item.supplier]
-    const productUrl = item.supplier_product_url || ''
-
-    if (!productUrl) {
-      // No URL stored — fall back to manual email for this item
-      manualItems.push(item)
-      continue
-    }
-
-    try {
-      const result = await autoOrder({
-        productUrl,
-        qty: item.qty,
-        deliverTo: {
-          name: shippingAddr.name,
-          phone: shippingAddr.phone,
-          address: shippingAddr.address,
-          city: shippingAddr.city,
-          province: shippingAddr.province,
-          postalCode: shippingAddr.postalCode,
-        },
-      })
-
-      if (result.success) {
         await supabaseAdmin.from('supplier_orders').insert({
-          order_id: orderId,
-          supplier: item.supplier,
-          supplier_order_id: result.orderNumber,
-          items: [item],
-          total_cost: item.supplier_cost * item.qty,
-          shipping_address: shippingAddr,
-          status: 'confirmed',
+          order_id: orderId, supplier: 'aliexpress',
+          supplier_order_id: supplierOrderId.toString(),
+          items: [item], total_cost: item.supplier_cost * item.qty,
+          shipping_address: shippingAddr, status: 'confirmed',
           placed_at: new Date().toISOString(),
-          notes: `Auto-ordered via Playwright. Supplier order: ${result.orderNumber}`,
+        })
+        autoOrdered++
+      } catch (e: unknown) {
+        const errorMessage = e instanceof Error ? e.message : String(e)
+        await supabaseAdmin.from('agent_logs').insert({
+          agent: 'fulfillment', action: 'aliexpress_order_error',
+          input: { orderId, item: item.name }, output: null,
+          reasoning: errorMessage, success: false, error: errorMessage,
+          duration_ms: Date.now() - start,
+        })
+        manual.push({ item, reason: `AliExpress error: ${errorMessage}` })
+      }
+    }
+
+    // ── CJ Dropshipping orders (automatic) ─────────────────────────────────
+    if (cjItems.length > 0) {
+      try {
+        const result = await cj.createOrder({
+          orderNumber: order.order_number,
+          shippingAddress: {
+            name: shippingAddr.name, phone: shippingAddr.phone,
+            email: shippingAddr.email, address: shippingAddr.address,
+            city: shippingAddr.city, province: shippingAddr.province,
+            postalCode: shippingAddr.postalCode,
+          },
+          products: cjItems.map(i => ({
+            vid: i.variant_id || i.supplier_product_id,
+            quantity: i.qty,
+            shippingName: i.shipping_service || 'CJPacket Ordinary',
+          })),
         })
 
+        const cjOrderId = result?.data?.orderId
+        if (!cjOrderId) {
+          for (const item of cjItems) {
+            manual.push({
+              item,
+              reason: 'CJ returned no order id. The order may or may not have been placed: check your CJ orders BEFORE ordering again',
+            })
+          }
+        } else {
+          await supabaseAdmin.from('supplier_orders').insert({
+            order_id: orderId, supplier: 'cj',
+            supplier_order_id: cjOrderId,
+            items: cjItems,
+            total_cost: cjItems.reduce((sum, i) => sum + i.supplier_cost * i.qty, 0),
+            shipping_address: shippingAddr, status: 'confirmed',
+            placed_at: new Date().toISOString(),
+          })
+          autoOrdered += cjItems.length
+        }
+      } catch (e: unknown) {
+        const errorMessage = e instanceof Error ? e.message : String(e)
+        console.error('CJ order error:', e)
         await supabaseAdmin.from('agent_logs').insert({
-          agent: 'fulfillment', action: `${item.supplier}_auto_order_success`,
-          input: { orderId, item: item.name, productUrl },
-          output: { orderNumber: result.orderNumber },
-          reasoning: `Successfully auto-ordered from ${item.supplier}`,
-          success: true, duration_ms: Date.now() - start,
+          agent: 'fulfillment', action: 'cj_order_error',
+          input: { orderId }, output: null, success: false,
+          error: errorMessage, duration_ms: Date.now() - start,
         })
-      } else {
-        // Auto-order failed — push to manual fallback
-        console.error(`${item.supplier} auto-order failed:`, result.error)
-        manualItems.push(item)
+        for (const item of cjItems) manual.push({ item, reason: `CJ error: ${errorMessage}` })
+      }
+    }
 
+    // ── Takealot / Makro — Playwright auto-ordering ────────────────────────
+    for (const item of autoSAItems) {
+      const autoOrder = PLAYWRIGHT_SUPPLIERS[item.supplier]
+      const productUrl = item.supplier_product_url || ''
+
+      if (!productUrl) {
+        manual.push({ item, reason: 'No product URL stored for automatic ordering' })
+        continue
+      }
+
+      try {
+        const result = await autoOrder({
+          productUrl,
+          qty: item.qty,
+          deliverTo: {
+            name: shippingAddr.name,
+            phone: shippingAddr.phone,
+            address: shippingAddr.address,
+            city: shippingAddr.city,
+            province: shippingAddr.province,
+            postalCode: shippingAddr.postalCode,
+          },
+        })
+
+        if (result.success) {
+          await supabaseAdmin.from('supplier_orders').insert({
+            order_id: orderId,
+            supplier: item.supplier,
+            supplier_order_id: result.orderNumber,
+            items: [item],
+            total_cost: item.supplier_cost * item.qty,
+            shipping_address: shippingAddr,
+            status: 'confirmed',
+            placed_at: new Date().toISOString(),
+            notes: `Auto-ordered via Playwright. Supplier order: ${result.orderNumber}`,
+          })
+          autoOrdered++
+
+          await supabaseAdmin.from('agent_logs').insert({
+            agent: 'fulfillment', action: `${item.supplier}_auto_order_success`,
+            input: { orderId, item: item.name, productUrl },
+            output: { orderNumber: result.orderNumber },
+            reasoning: `Successfully auto-ordered from ${item.supplier}`,
+            success: true, duration_ms: Date.now() - start,
+          })
+        } else {
+          console.error(`${item.supplier} auto-order failed:`, result.error)
+          manual.push({ item, reason: `${item.supplier} auto-order failed: ${result.error ?? 'unknown error'}` })
+
+          await supabaseAdmin.from('agent_logs').insert({
+            agent: 'fulfillment', action: `${item.supplier}_auto_order_failed`,
+            input: { orderId, item: item.name },
+            output: { error: result.error },
+            reasoning: `Auto-order failed, falling back to manual email`,
+            success: false, duration_ms: Date.now() - start,
+          })
+        }
+      } catch (e: unknown) {
+        const errorMessage = e instanceof Error ? e.message : String(e)
+        console.error(`${item.supplier} auto-order exception:`, e)
+        manual.push({ item, reason: `${item.supplier} auto-order error: ${errorMessage}` })
         await supabaseAdmin.from('agent_logs').insert({
-          agent: 'fulfillment', action: `${item.supplier}_auto_order_failed`,
-          input: { orderId, item: item.name },
-          output: { error: result.error },
-          reasoning: `Auto-order failed, falling back to manual email`,
-          success: false, duration_ms: Date.now() - start,
+          agent: 'fulfillment', action: `${item.supplier}_auto_order_error`,
+          input: { orderId, item: item.name }, output: null,
+          reasoning: errorMessage, success: false,
+          error: errorMessage, duration_ms: Date.now() - start,
         })
       }
-    } catch (e: unknown) {
-      const errorMessage = e instanceof Error ? e.message : String(e)
-      console.error(`${item.supplier} auto-order exception:`, e)
-      manualItems.push(item) // fallback to manual
-      await supabaseAdmin.from('agent_logs').insert({
-        agent: 'fulfillment', action: `${item.supplier}_auto_order_error`,
-        input: { orderId, item: item.name }, output: null,
-        reasoning: errorMessage, success: false,
-        error: errorMessage, duration_ms: Date.now() - start,
-      })
     }
-  }
 
-  // ── Manual fallback — email owner for items that couldn't be auto-ordered ──
-  if (manualItems.length > 0) {
-    try {
-      await supabaseAdmin.from('supplier_orders').insert({
-        order_id: orderId,
-        supplier: manualItems[0].supplier,
-        supplier_order_id: null,
-        items: manualItems,
-        total_cost: manualItems.reduce((sum, i) => sum + i.supplier_cost * i.qty, 0),
-        shipping_address: shippingAddr,
-        status: 'needs_manual_order',
-        placed_at: new Date().toISOString(),
-      })
+    // ── Anything not ordered: record it and tell the owner ──────────────────
+    if (manual.length > 0) {
+      const bySupplier = new Map<string, ManualItem[]>()
+      for (const m of manual) {
+        const key = SUPPLIER_ORDER_SUPPLIERS.includes(m.item.supplier) ? m.item.supplier : 'manual'
+        bySupplier.set(key, [...(bySupplier.get(key) ?? []), m])
+      }
+      for (const [supplier, group] of bySupplier) {
+        const { error: insertError } = await supabaseAdmin.from('supplier_orders').insert({
+          order_id: orderId,
+          supplier,
+          supplier_order_id: null,
+          items: group.map(g => g.item),
+          total_cost: group.reduce((sum, g) => sum + g.item.supplier_cost * g.item.qty, 0),
+          shipping_address: shippingAddr,
+          status: 'needs_manual_order',
+          placed_at: new Date().toISOString(),
+          notes: group.map(g => `${g.item.name}: ${g.reason}`).join('\n'),
+        })
+        if (insertError) console.error('needs_manual_order insert failed:', insertError)
+      }
 
-      const ownerEmail = process.env.OWNER_EMAIL || process.env.ADMIN_EMAIL
-      if (ownerEmail) {
-        const itemRows = manualItems.map(i => {
-          const name = i.supplier.charAt(0).toUpperCase() + i.supplier.slice(1)
-          const url = i.supplier_product_url || `https://www.${i.supplier}.co.za`
-          return `• ${i.name} × ${i.qty}\n  Buy at: ${name} → ${url}\n  Cost: R${(i.supplier_cost * i.qty).toFixed(2)}`
-        }).join('\n\n')
+      const itemRows = manual
+        .map(({ item, reason }) => {
+          const name = item.supplier.charAt(0).toUpperCase() + item.supplier.slice(1)
+          const url = item.supplier_product_url || `https://www.${item.supplier}.co.za`
+          return `• ${item.name} × ${item.qty}\n  Why: ${reason}\n  Buy at: ${name} → ${url}\n  Cost: R${(item.supplier_cost * item.qty).toFixed(2)}`
+        })
+        .join('\n\n')
 
-        await sendEmail({
-          to: ownerEmail,
-          subject: `⚠️ Manual order needed: ${order.order_number}`,
-          react: React.createElement('div', null,
-            React.createElement('h2', null, `Order ${order.order_number} — Action Required`),
-            React.createElement('p', null, `Auto-order could not complete for some items. Please order these manually:`),
-            React.createElement('pre', { style: { background: '#f5f5f5', padding: '16px', borderRadius: '8px', fontFamily: 'monospace' } }, itemRows),
-            React.createElement('p', null, `Ship to: ${shippingAddr.name}, ${shippingAddr.address}, ${shippingAddr.city}, ${shippingAddr.province} ${shippingAddr.postalCode}`),
-            React.createElement('p', null, `Phone: ${shippingAddr.phone}`),
-            React.createElement('p', { style: { color: '#16a34a', fontWeight: 'bold' } }, `Your profit on this order: R${order.total_profit?.toFixed(2) || '—'}`),
-          ),
+      const alerted = await notifyOwner(`⚠️ Action required: order ${order.order_number}`, [
+        `Order ${order.order_number} has been PAID but ${manual.length} item(s) were NOT ordered automatically:`,
+        itemRows,
+        `Ship to: ${shippingAddr.name}, ${shippingAddr.address}, ${shippingAddr.city}, ${shippingAddr.province} ${shippingAddr.postalCode}\nPhone: ${shippingAddr.phone}`,
+        `Your profit on this order: R${order.total_profit?.toFixed(2) || '—'}`,
+      ])
+      if (!alerted) {
+        await supabaseAdmin.from('agent_logs').insert({
+          agent: 'fulfillment', action: 'owner_alert_failed',
+          input: { orderId }, output: { itemCount: manual.length }, success: false,
+          error: 'Could not email the owner about items needing manual ordering',
+          duration_ms: Date.now() - start,
         })
       }
-    } catch (e: unknown) {
-      console.error('Manual fallback error:', e)
     }
+  } catch (e) {
+    // Something unexpected after the claim (bad address, DB error). Make it visible, never leave it 'fulfilling'.
+    const message = e instanceof Error ? e.message : String(e)
+    await supabaseAdmin
+      .from('orders')
+      .update({ fulfillment_status: 'needs_attention', updated_at: new Date().toISOString() })
+      .eq('id', orderId)
+    await supabaseAdmin.from('agent_logs').insert({
+      agent: 'fulfillment', action: 'fulfillment_error',
+      input: { orderId }, output: null, success: false, error: message,
+      duration_ms: Date.now() - start,
+    })
+    await notifyOwner(`⚠️ Fulfilment failed: order ${order.order_number}`, [
+      `Order ${order.order_number} is paid but fulfilment stopped with an error:\n${message}`,
+      autoOrdered > 0
+        ? `${autoOrdered} item(s) were already ordered from suppliers. Check supplier accounts before re-ordering.`
+        : 'Nothing was ordered from suppliers.',
+    ])
+    throw e
   }
 
   await supabaseAdmin
     .from('orders')
-    .update({ fulfillment_status: 'fulfilling', status: 'confirmed', updated_at: new Date().toISOString() })
+    .update({
+      fulfillment_status: manual.length > 0 ? 'needs_attention' : 'fulfilling',
+      status: 'confirmed',
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', orderId)
 
-  // Send confirmation email to customer
-  try {
-    await sendEmail({
-      to: order.customer_email,
-      subject: `Order ${order.order_number} Confirmed — DropEmpire SA`,
-      react: React.createElement(OrderConfirmationEmail, { order }),
-    })
-  } catch (e) {
-    console.error('Email send error:', e)
-  }
+  // Manual mode already confirmed receipt when the order was queued for approval.
+  if (!opts.approved) await sendCustomerConfirmation(order, orderId)
 
   await supabaseAdmin.from('agent_logs').insert({
     agent: 'fulfillment', action: 'fulfillment_complete',
     input: { orderId },
-    output: { status: 'fulfilling', autoItems: aliItems.length + cjItems.length + autoSAItems.length, manualItems: manualItems.length },
-    reasoning: 'Fulfillment complete — auto orders placed via API and Playwright, manual fallback emailed',
-    success: true, duration_ms: Date.now() - start,
+    output: { status: manual.length > 0 ? 'needs_attention' : 'fulfilling', autoItems: autoOrdered, manualItems: manual.length },
+    reasoning: manual.length > 0
+      ? 'Fulfillment finished with items needing manual ordering; owner alerted'
+      : 'Fulfillment complete — all items ordered automatically',
+    success: manual.length === 0, duration_ms: Date.now() - start,
   })
 }
 
@@ -363,17 +488,17 @@ export async function checkAndUpdateTracking(): Promise<void> {
 }
 
 /**
- * Safety net for paid orders that were never picked up (e.g. the process died
- * between payment confirmation and fulfillment). Only touches 'unfulfilled'
- * orders, which have placed nothing with suppliers yet, so retrying is safe.
- * Orders stuck in 'fulfilling' may have partially ordered and need a human.
+ * Daily safety net for paid orders that need a human or were never picked up.
+ *  - manual mode: orders waiting for approval are never auto-run; the owner gets a digest.
+ *  - auto mode: 'unfulfilled' orders (nothing placed with suppliers yet) are retried safely.
+ *  - orders stuck in 'fulfilling' may have partially ordered, so they are only reported.
  */
-export async function retryUnfulfilledPaidOrders(maxOrders = 10): Promise<{ retried: number; stuck: number }> {
+export async function retryUnfulfilledPaidOrders(maxOrders = 10): Promise<{ retried: number; stuck: number; awaitingApproval: number }> {
   const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString()
 
   const { data: pending } = await supabaseAdmin
     .from('orders')
-    .select('id')
+    .select('id, order_number')
     .eq('payment_status', 'paid')
     .eq('fulfillment_status', 'unfulfilled')
     .lt('updated_at', cutoff)
@@ -381,24 +506,51 @@ export async function retryUnfulfilledPaidOrders(maxOrders = 10): Promise<{ retr
     .limit(maxOrders)
 
   let retried = 0
-  for (const { id } of pending ?? []) {
-    try {
-      await runFulfillmentAgent(id)
-      retried++
-    } catch (e) {
-      console.error(`Fulfillment retry failed for ${id}:`, e)
+  let awaitingApproval = 0
+  const alerts: string[] = []
+
+  if (getFulfillmentMode() === 'manual') {
+    awaitingApproval = pending?.length ?? 0
+    if (awaitingApproval > 0) {
+      alerts.push(
+        `${awaitingApproval} paid order(s) are waiting for your approval: ${pending!.map(o => o.order_number).join(', ')}. Open Admin → Orders → "Approve & order".`
+      )
+    }
+  } else {
+    for (const { id } of pending ?? []) {
+      try {
+        await runFulfillmentAgent(id)
+        retried++
+      } catch (e) {
+        console.error(`Fulfillment retry failed for ${id}:`, e)
+      }
     }
   }
 
   const stuckCutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString()
-  const { count: stuck } = await supabaseAdmin
+  const { data: stuckRows } = await supabaseAdmin
     .from('orders')
-    .select('id', { count: 'exact', head: true })
+    .select('order_number')
     .eq('payment_status', 'paid')
     .eq('fulfillment_status', 'fulfilling')
     .eq('status', 'processing')
     .lt('updated_at', stuckCutoff)
+  const stuck = stuckRows?.length ?? 0
+  if (stuck > 0) {
+    alerts.push(
+      `${stuck} paid order(s) have been stuck in "fulfilling" for over an hour: ${stuckRows!.map(o => o.order_number).join(', ')}. Some items may already be ordered: check supplier accounts before re-ordering.`
+    )
+  }
 
-  if (stuck) console.warn(`${stuck} paid order(s) stuck in 'fulfilling' for over an hour; needs manual review`)
-  return { retried, stuck: stuck ?? 0 }
+  const { data: attention } = await supabaseAdmin
+    .from('orders')
+    .select('order_number')
+    .eq('fulfillment_status', 'needs_attention')
+    .limit(50)
+  if (attention && attention.length > 0) {
+    alerts.push(`${attention.length} order(s) need manual action: ${attention.map(o => o.order_number).join(', ')}.`)
+  }
+
+  if (alerts.length > 0) await notifyOwner('DropEmpire SA: orders need your attention', alerts)
+  return { retried, stuck, awaitingApproval }
 }
