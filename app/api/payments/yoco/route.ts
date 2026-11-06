@@ -17,6 +17,9 @@ const Schema = z
 
 export async function POST(req: NextRequest) {
   let claimedOrderId: string | null = null
+  if (process.env.NEXT_PUBLIC_YOCO_ENABLED !== 'true') {
+    return NextResponse.json({ error: 'This payment method is not available' }, { status: 503 })
+  }
   try {
     const limited = await limitByIp(req, 'yoco', 10, 60)
     if (limited) return limited

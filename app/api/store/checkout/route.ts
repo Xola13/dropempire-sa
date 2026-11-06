@@ -39,7 +39,12 @@ const CheckoutSchema = z
       )
       .min(1)
       .max(50),
-    paymentMethod: z.enum(['payfast', 'yoco']),
+    // Yoco is only accepted once NEXT_PUBLIC_YOCO_ENABLED=true (its checkout flow is not built yet).
+    paymentMethod: z
+      .enum(['payfast', 'yoco'])
+      .refine(m => m === 'payfast' || process.env.NEXT_PUBLIC_YOCO_ENABLED === 'true', {
+        message: 'This payment method is not available',
+      }),
   })
   .strict()
 
