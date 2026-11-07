@@ -9,7 +9,6 @@ import {
   Shield,
   ChevronDown,
   ChevronUp,
-  Star,
   Share2,
   Check,
 } from 'lucide-react'
@@ -141,25 +140,8 @@ export default function ProductDetail({ product }: ProductDetailProps) {
               {product.name}
             </h1>
 
-            {product.orders_count > 0 && (
-              <div className="flex items-center gap-2 mt-3">
-                <div className="flex">
-                  {[...Array(5)].map((_, i) => (
-                    <Star
-                      key={i}
-                      size={14}
-                      className={
-                        i < 4
-                          ? 'text-amber-400 fill-amber-400'
-                          : 'text-gray-200 fill-gray-200'
-                      }
-                    />
-                  ))}
-                </div>
-                <span className="text-sm text-gray-500">
-                  {product.orders_count} sold
-                </span>
-              </div>
+            {product.orders_count >= 5 && (
+              <p className="mt-3 text-sm text-gray-500">{product.orders_count} sold</p>
             )}
           </div>
 
@@ -274,7 +256,7 @@ export default function ProductDetail({ product }: ProductDetailProps) {
               <Shield size={18} className="text-emerald-600 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="font-semibold text-emerald-800 text-sm">
-                  Buyer Protection
+                  Secure payment
                 </p>
                 <p className="text-xs text-emerald-600 mt-0.5">
                   Secure PayFast payment

@@ -41,14 +41,31 @@ export default function AdminOrdersPage() {
     fetchOrders()
   }, [fetchOrders])
 
+  const pendingOrders = orders.filter(
+    o => o.payment_status === 'paid' && o.fulfillment_status === 'unfulfilled'
+  )
+
   const handleAutoFulfill = async () => {
+    const ok = confirm(
+      `Approve ${pendingOrders.length} paid order(s)? This places real orders with suppliers and spends money.`
+    )
+    if (!ok) return
     setFulfilling(true)
+    const failed: string[] = []
     try {
-      const res = await fetch('/api/fulfillment/auto-fulfill', {
-        method: 'POST',
-      })
-      const data = await res.json()
-      alert(`Fulfillment run complete. ${data.fulfilled || 0} orders processed.`)
+      for (const order of pendingOrders) {
+        const res = await fetch('/api/fulfillment/auto-fulfill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: order.id }),
+        })
+        if (!res.ok) failed.push(order.order_number)
+      }
+      alert(
+        failed.length === 0
+          ? 'Done. Check your email for any items that need manual ordering.'
+          : `These orders failed, check server logs and your email: ${failed.join(', ')}`
+      )
       fetchOrders()
     } catch {
       alert('Fulfillment run failed. Check server logs.')
@@ -57,9 +74,7 @@ export default function AdminOrdersPage() {
     }
   }
 
-  const pendingCount = orders.filter(
-    o => o.payment_status === 'paid' && o.fulfillment_status === 'unfulfilled'
-  ).length
+  const pendingCount = pendingOrders.length
 
   return (
     <div className="p-8 space-y-6">
@@ -84,8 +99,8 @@ export default function AdminOrdersPage() {
             >
               <Zap size={14} />
               {fulfilling
-                ? 'Fulfilling...'
-                : `Auto-Fulfill ${pendingCount} Orders`}
+                ? 'Ordering...'
+                : `Approve & order ${pendingCount} paid order${pendingCount === 1 ? '' : 's'}`}
             </button>
           )}
         </div>

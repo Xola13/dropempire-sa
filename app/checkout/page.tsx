@@ -19,6 +19,9 @@ const SA_PROVINCES = [
   'Western Cape',
 ]
 
+// Yoco card payments are not wired up end to end yet; the option stays hidden until they are.
+const YOCO_ENABLED = process.env.NEXT_PUBLIC_YOCO_ENABLED === 'true'
+
 export default function CheckoutPage() {
   const { items, total, clearCart } = useCartStore()
   const cartTotal = total()
@@ -357,6 +360,7 @@ export default function CheckoutPage() {
                 </div>
               </label>
 
+              {YOCO_ENABLED && (
               <label
                 className={`flex items-center gap-4 p-4 border-2 rounded-xl cursor-pointer transition-colors ${
                   form.paymentMethod === 'yoco'
@@ -384,6 +388,7 @@ export default function CheckoutPage() {
                   YOCO
                 </div>
               </label>
+              )}
             </div>
           </div>
 

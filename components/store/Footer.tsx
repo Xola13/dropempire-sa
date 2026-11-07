@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { Package, Mail, Phone, MapPin } from 'lucide-react'
+import { getSeller } from '@/lib/seller'
 
 const footerLinks = {
   Shop: [
@@ -11,17 +12,16 @@ const footerLinks = {
   Support: [
     { label: 'Track Order', href: '/track' },
     { label: 'Returns Policy', href: '/returns' },
-    { label: 'FAQ', href: '/faq' },
     { label: 'Contact Us', href: '/contact' },
   ],
   Company: [
-    { label: 'About Us', href: '/about' },
     { label: 'Privacy Policy', href: '/privacy' },
     { label: 'Terms of Service', href: '/terms' },
   ],
 }
 
 export default function Footer() {
+  const seller = getSeller()
   return (
     <footer className="bg-[#0F172A] text-gray-300">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
@@ -38,24 +38,29 @@ export default function Footer() {
               </span>
             </Link>
             <p className="text-gray-400 text-sm leading-relaxed max-w-xs">
-              South Africa&apos;s premier online store. Quality products from
-              trusted suppliers, delivered to your door across SA.
+              An online store delivering across South Africa.
             </p>
 
-            {/* Contact */}
+            {/* Contact: only what is configured in SELLER_* env vars */}
             <div className="mt-6 space-y-2">
-              <div className="flex items-center gap-2 text-sm text-gray-400">
-                <Mail size={14} className="text-[#F59E0B]" />
-                <span>support@dropempiresa.co.za</span>
-              </div>
-              <div className="flex items-center gap-2 text-sm text-gray-400">
-                <Phone size={14} className="text-[#F59E0B]" />
-                <span>+27 (0)10 000 0000</span>
-              </div>
-              <div className="flex items-center gap-2 text-sm text-gray-400">
-                <MapPin size={14} className="text-[#F59E0B]" />
-                <span>Johannesburg, South Africa</span>
-              </div>
+              {seller.email && (
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <Mail size={14} className="text-[#F59E0B]" />
+                  <span>{seller.email}</span>
+                </div>
+              )}
+              {seller.phone && (
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <Phone size={14} className="text-[#F59E0B]" />
+                  <span>{seller.phone}</span>
+                </div>
+              )}
+              {seller.physicalAddress && (
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <MapPin size={14} className="text-[#F59E0B]" />
+                  <span>{seller.physicalAddress}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -91,7 +96,7 @@ export default function Footer() {
           <div className="flex items-center gap-3">
             <span className="text-gray-500 text-xs">Secure payments:</span>
             <div className="flex items-center gap-2">
-              {['PayFast', 'Visa', 'MC', 'Yoco'].map(brand => (
+              {['PayFast', 'Visa', 'MC'].map(brand => (
                 <div
                   key={brand}
                   className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs text-gray-300 font-medium"

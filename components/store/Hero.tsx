@@ -59,9 +59,8 @@ export default function Hero() {
             transition={{ duration: 0.6, delay: 0.2 }}
             className="mt-6 text-lg text-gray-300 leading-relaxed max-w-xl"
           >
-            Thousands of quality products delivered across South Africa.
-            Secure SA payments, competitive prices, and reliable delivery
-            you can count on.
+            Quality products delivered across South Africa.
+            Secure SA payments and clear pricing.
           </motion.p>
 
           <motion.div

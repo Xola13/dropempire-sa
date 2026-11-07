@@ -58,8 +58,8 @@ CREATE POLICY "Public can view published products" ON products
   FOR SELECT TO anon, authenticated
   USING (is_published = true);
 
--- Tables created in the future should not be exposed by default either.
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authenticated;
+-- NOTE: no ALTER DEFAULT PRIVILEGES here. On a Supabase project shared with other apps it
+-- would silently change what their future tables expose. Enable RLS on new tables instead.
 
 -- ============================================================
 -- 4. Functions: not callable through the public API, fixed search_path

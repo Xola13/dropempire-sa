@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { formatZAR } from '@/lib/utils'
 import type { TrendingProduct, SourcingResult } from '@/types'
+import type { TrendMatchResult } from '@/lib/suppliers/trend-match'
 
 type WorkflowStep = 'idle' | 'trending' | 'sourcing' | 'importing' | 'done'
 
@@ -31,6 +32,27 @@ export default function AISourcer() {
     slug: string
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [localMatches, setLocalMatches] = useState<Record<string, TrendMatchResult>>({})
+  const [matchingKeyword, setMatchingKeyword] = useState<string | null>(null)
+
+  async function findLocalMatches(keyword: string) {
+    setMatchingKeyword(keyword)
+    setError(null)
+    try {
+      const res = await fetch('/api/ai/trend-matches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Local search failed')
+      setLocalMatches(prev => ({ ...prev, [keyword]: data }))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Local search failed')
+    } finally {
+      setMatchingKeyword(null)
+    }
+  }
 
   async function runTrendScout() {
     setStep('trending')
@@ -207,6 +229,74 @@ export default function AISourcer() {
                         </>
                       )}
                     </button>
+
+                    <button
+                      onClick={() => findLocalMatches(product.name)}
+                      disabled={isLoading || matchingKeyword !== null}
+                      className="mt-2 w-full flex items-center justify-center gap-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      {matchingKeyword === product.name ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" />
+                          Searching SA sources...
+                        </>
+                      ) : (
+                        <>
+                          <Search size={12} />
+                          Find local matches
+                        </>
+                      )}
+                    </button>
+
+                    {localMatches[product.name] && (
+                      <div className="mt-3 border-t border-gray-100 pt-3 space-y-2">
+                        {localMatches[product.name].matches.length === 0 ? (
+                          <p className="text-xs text-gray-500">No matching products found.</p>
+                        ) : (
+                          <>
+                            <p className="text-xs text-gray-500">
+                              Market price (median in stock):{' '}
+                              <span className="font-semibold text-gray-700">
+                                {localMatches[product.name].marketPrice !== null
+                                  ? formatZAR(localMatches[product.name].marketPrice as number)
+                                  : 'n/a'}
+                              </span>
+                            </p>
+                            {localMatches[product.name].matches.slice(0, 5).map(m => (
+                              <a
+                                key={m.id}
+                                href={m.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-start justify-between gap-2 text-xs hover:bg-gray-50 rounded p-1"
+                              >
+                                <span className="min-w-0">
+                                  <span className="block truncate text-gray-700">{m.name}</span>
+                                  <span className="text-gray-400 capitalize">
+                                    {m.source}
+                                    {!m.inStock && ' · out of stock'}
+                                  </span>
+                                </span>
+                                <span className="text-right flex-shrink-0">
+                                  <span className="block font-semibold text-gray-700">{formatZAR(m.cost)}</span>
+                                  <span className={m.marginAtMarket >= 15 ? 'text-emerald-600' : 'text-gray-400'}>
+                                    {m.marginAtMarket}% at market
+                                  </span>
+                                </span>
+                              </a>
+                            ))}
+                            <p className="text-[11px] text-gray-400">
+                              Delivery time not verified. Margin assumes you resell at the median price.
+                            </p>
+                          </>
+                        )}
+                        {localMatches[product.name].failedSources.length > 0 && (
+                          <p className="text-[11px] text-amber-600">
+                            Could not reach: {localMatches[product.name].failedSources.join(', ')}. Results may be incomplete.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </motion.div>
                 ))}
               </div>

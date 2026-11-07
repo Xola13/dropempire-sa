@@ -111,14 +111,14 @@ export default function AdminDashboard() {
               {data.pendingFulfillment !== 1 ? 's' : ''} awaiting fulfillment
             </p>
             <p className="text-amber-600 text-xs mt-0.5">
-              Payment confirmed — ready to forward to supplier
+              Payment confirmed — waiting for your approval to order from the supplier
             </p>
           </div>
           <a
-            href="/api/fulfillment/auto-fulfill"
+            href="/admin/orders"
             className="ml-auto px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600 transition-colors"
           >
-            Auto-Fulfill Now
+            Review & Approve
           </a>
         </div>
       )}

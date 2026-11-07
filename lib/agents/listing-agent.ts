@@ -1,8 +1,24 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { z } from 'zod'
+import { createMessage, untrusted, UNTRUSTED_NOTICE } from '@/lib/ai'
 import { supabaseAdmin } from '@/lib/supabase'
 import { slugify } from '@/lib/utils'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+// The model's JSON ends up on the public storefront, so bound every field and strip markup.
+const noMarkup = (max: number) =>
+  z.string().transform(v => v.replace(/<[^>]*>/g, '').trim()).pipe(z.string().min(1).max(max))
+
+const DraftSchema = z.object({
+  title: noMarkup(120),
+  description: noMarkup(4000),
+  bulletPoints: z.array(noMarkup(300)).min(1).max(10),
+  faqs: z.array(z.object({ question: noMarkup(300), answer: noMarkup(1000) })).max(8).default([]),
+  tags: z.array(noMarkup(40)).max(20).default([]),
+  category: noMarkup(80),
+  compareAtPrice: z.coerce.number().positive().max(10_000_000),
+  seoTitle: noMarkup(120),
+  seoDescription: noMarkup(300),
+})
 
 export interface ListingDraft {
   title: string
@@ -27,21 +43,21 @@ export async function runListingAgent(productData: {
 }): Promise<ListingDraft> {
   const start = Date.now()
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const message = await createMessage('listing', {
     max_tokens: 4096,
     system: `You are a South African e-commerce copywriter specialising in high-converting product listings for dropshipping stores.
 Write compelling, honest copy that resonates with South African shoppers.
 Use South African English (not American English).
 Avoid making false claims. Highlight value and benefits clearly.
-Return ONLY valid JSON.`,
+Return ONLY valid JSON.
+${UNTRUSTED_NOTICE}`,
     messages: [
       {
         role: 'user',
         content: `Create a complete product listing for this product:
 
-Product name: ${productData.name}
-Original description: ${productData.supplierDescription || 'N/A'}
+Product name: ${untrusted(productData.name, 300)}
+Original description: ${untrusted(productData.supplierDescription, 2000)}
 Category: ${productData.category || 'General'}
 Selling price: R${productData.price}
 Delivery: ${productData.deliveryDays}
@@ -71,7 +87,7 @@ Generate the following as JSON:
 
   const jsonMatch = content.text.match(/\{[\s\S]*\}/)
   if (!jsonMatch) throw new Error('No JSON in response')
-  const draft = JSON.parse(jsonMatch[0])
+  const draft = DraftSchema.parse(JSON.parse(jsonMatch[0]))
 
   const result: ListingDraft = {
     ...draft,

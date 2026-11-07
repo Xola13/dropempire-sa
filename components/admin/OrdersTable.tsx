@@ -113,6 +113,22 @@ export default function OrdersTable({
                     >
                       {order.payment_status}
                     </span>
+                    {order.payment_status === 'paid' &&
+                      (order.fulfillment_status === 'unfulfilled' ||
+                        order.fulfillment_status === 'needs_attention') && (
+                        <span
+                          className={cn(
+                            'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
+                            order.fulfillment_status === 'needs_attention'
+                              ? 'bg-red-100 text-red-700'
+                              : 'bg-amber-100 text-amber-700'
+                          )}
+                        >
+                          {order.fulfillment_status === 'needs_attention'
+                            ? 'needs manual action'
+                            : 'awaiting approval'}
+                        </span>
+                      )}
                   </div>
                 </td>
                 <td className="py-3 px-4 text-gray-500 text-xs">
